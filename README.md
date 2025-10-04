@@ -1,8 +1,13 @@
 # SkipMarketplace
 
-This is a free [Skip](https://skip.tools) Swift/Kotlin library project containing the following modules:
+This module provide support for interfacing with an app's
+marketplace, such as the Google Play Store for Android
+and the Apple App Store for iOS.
 
-SkipMarketplace
+Currently, the framework provides the ability to request
+a store rating for the app from the user. In the future,
+this framework will provide the ability to perform
+in-app purchases and subscription management.
 
 ## Setup
 
@@ -42,9 +47,6 @@ relevant documentation for the
 [Apple App Store](https://developer.android.com/guide/playcore/in-app-review#when-to-request)
 and
 [Google PlayStore](https://developer.apple.com/design/human-interface-guidelines/ratings-and-reviews#Best-practices).
-
-
-
 
 
 ## Building
