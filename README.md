@@ -4,6 +4,49 @@ This is a free [Skip](https://skip.tools) Swift/Kotlin library project containin
 
 SkipMarketplace
 
+## Setup
+
+To include this framework in your project, add the following
+dependency to your `Package.swift` file:
+
+```swift
+let package = Package(
+    name: "my-package",
+    products: [
+        .library(name: "MyProduct", targets: ["MyTarget"]),
+    ],
+    dependencies: [
+        .package(url: "https://source.skip.tools/skip-marketplace.git", "0.0.0"..<"2.0.0"),
+    ],
+    targets: [
+        .target(name: "MyTarget", dependencies: [
+            .product(name: "SkipMarketplace", package: "skip-marketplace")
+        ])
+    ]
+)
+```
+
+## App Review Requests
+
+You can use this library to request that the app marketplace show a prompt to the user requesting a rating for the app for the given marketplace.
+
+```swift
+import SkipMarketplace
+
+// request that the system show an app review request at most once every month
+Marketplace.current.requestReview(period: .days(31))
+```
+
+For guidance on how and when to make these sorts of requests, see the
+relevant documentation for the 
+[Apple App Store](https://developer.android.com/guide/playcore/in-app-review#when-to-request)
+and
+[Google PlayStore](https://developer.apple.com/design/human-interface-guidelines/ratings-and-reviews#Best-practices).
+
+
+
+
+
 ## Building
 
 This project is a free Swift Package Manager module that uses the
