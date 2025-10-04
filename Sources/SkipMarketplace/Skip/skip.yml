@@ -1,0 +1,32 @@
+# Configuration file for https://skip.tools project
+skip:
+  mode: 'transpiled'
+  bridging: true
+
+# Kotlin dependencies and Gradle build options for this module can be configured here
+build:
+  contents:
+    - block: 'dependencies'
+      contents:
+        # https://developer.android.com/guide/playcore#java-kotlin-in-app-review
+        - 'implementation("com.google.android.play:review:2.0.2")'
+        - 'implementation("com.google.android.play:review-ktx:2.0.2")'
+
+        # https://developer.android.com/guide/playcore#java-kotlin-in-app-update
+        - 'implementation("com.google.android.play:app-update:2.1.0")'
+        - 'implementation("com.google.android.play:app-update-ktx:2.1.0")'
+
+        # https://developer.android.com/guide/playcore#java-kotlin-feature-delivery
+        - 'implementation("com.google.android.play:asset-delivery:2.3.0")'
+        - 'implementation("com.google.android.play:asset-delivery-ktx:2.3.0")'
+
+        # https://developer.android.com/guide/playcore#java-kotlin-asset-delivery
+        - 'implementation("com.google.android.play:asset-delivery:2.3.0")'
+        - 'implementation("com.google.android.play:asset-delivery-ktx:2.3.0")'
+
+        # https://developer.android.com/google/play/billing/getting-ready#dependency
+        - 'implementation("com.android.billingclient:billing:8.0.0")'
+        - 'implementation("com.android.billingclient:billing-ktx:8.0.0")'
+
+        # https://developer.android.com/google/play/integrity/setup#kotlin-or-java
+        - 'implementation("com.google.android.play:integrity:1.5.0")'
