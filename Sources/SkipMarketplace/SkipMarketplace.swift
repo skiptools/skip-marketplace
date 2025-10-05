@@ -4,6 +4,18 @@
 import SwiftUI
 #if SKIP
 import com.google.android.play.core.review.ReviewManagerFactory
+import com.android.billingclient.api.BillingClient
+import com.android.billingclient.api.BillingClient.BillingResponseCode
+import com.android.billingclient.api.BillingClientStateListener
+import com.android.billingclient.api.BillingFlowParams
+import com.android.billingclient.api.BillingResult
+import com.android.billingclient.api.PendingPurchasesParams
+import com.android.billingclient.api.PurchasesUpdatedListener
+import com.android.billingclient.api.QueryProductDetailsParams
+import com.android.billingclient.api.queryProductDetails
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 #elseif canImport(StoreKit)
 import StoreKit
 #endif
@@ -12,6 +24,105 @@ import StoreKit
 public struct Marketplace {
     /// The current marketplace for the environment
     nonisolated(unsafe) public static let current = Marketplace()
+
+    #if SKIP
+    private var activeBillingClient: BillingClient? = nil
+
+    private func connectBillingClient() async throws -> BillingClient {
+        // return the cached client if it is ready
+        if let activeBillingClient = self.activeBillingClient, activeBillingClient.isReady() {
+            return activeBillingClient
+        }
+
+        // otherwise create a new billing client
+        // https://developer.android.com/google/play/billing/integrate#connect_to_google_play
+
+        let billingClient = BillingClient.newBuilder(ProcessInfo.processInfo.androidContext)
+            //.setListener(purchasesUpdatedListener) // TODO
+            // TODO: configure other settings
+            //.enablePendingPurchases()
+            .enableAutoServiceReconnection()
+            .build()
+
+
+        try await withCheckedThrowingContinuation { continuation in
+            func billingSetupFinished(billingResult: BillingResult) {
+                //logger.log("billing setup finished: \(billingResult)")
+                if billingResult.responseCode == BillingResponseCode.OK {
+                    continuation.resume(returning: ())
+                } else {
+                    continuation.resume(throwing: ErrorException(RuntimeException(errorMessage(for: billingResult))))
+                }
+            }
+
+            func billingServiceDisconnected() {
+                // the billing client disconnected, so drop the cached reference
+                self.activeBillingClient = nil
+            }
+
+            // Skip has no support for anonymous subclass creation, so we need to patch it in
+            /* SKIP INSERT:
+            val billingClientListener = object : BillingClientStateListener {
+                override fun onBillingSetupFinished(billingResult: BillingResult) { billingSetupFinished(billingResult) }
+                override fun onBillingServiceDisconnected() { billingServiceDisconnected() }
+            }
+            */
+
+            billingClient.startConnection(billingClientListener)
+        }
+
+        // cache the billing client so we don't always need to reconnect
+        self.activeBillingClient = billingClient
+        return billingClient
+    }
+
+    /// https://developer.android.com/reference/com/android/billingclient/api/BillingClient.BillingResponseCode
+    private func errorMessage(for billingResult: BillingResult) -> String {
+        switch billingResult.responseCode {
+        case BillingResponseCode.BILLING_UNAVAILABLE: return "BILLING_UNAVAILABLE"
+        case BillingResponseCode.DEVELOPER_ERROR: return "DEVELOPER_ERROR"
+        case BillingResponseCode.ERROR: return "ERROR"
+        case BillingResponseCode.FEATURE_NOT_SUPPORTED: return "FEATURE_NOT_SUPPORTED"
+        case BillingResponseCode.ITEM_ALREADY_OWNED: return "ITEM_ALREADY_OWNED"
+        case BillingResponseCode.ITEM_NOT_OWNED: return "ITEM_NOT_OWNED"
+        case BillingResponseCode.ITEM_UNAVAILABLE: return "ITEM_UNAVAILABLE"
+        case BillingResponseCode.NETWORK_ERROR: return "NETWORK_ERROR"
+        case BillingResponseCode.SERVICE_DISCONNECTED: return "SERVICE_DISCONNECTED"
+        case BillingResponseCode.SERVICE_TIMEOUT: return "SERVICE_TIMEOUT"
+        case BillingResponseCode.SERVICE_UNAVAILABLE: return "SERVICE_UNAVAILABLE"
+        case BillingResponseCode.USER_CANCELED: return "USER_CANCELED"
+        default: return "Unknown error"
+        }
+    }
+    #endif
+
+    public func fetchProducts(for identifiers: [String], subscription: Bool) async throws -> [ProductInfo] {
+        #if SKIP
+        let productList: [QueryProductDetailsParams.Product] = identifiers.map { identifier in
+            QueryProductDetailsParams.Product.newBuilder()
+                .setProductId(identifier)
+                .setProductType(subscription ? BillingClient.ProductType.SUBS : BillingClient.ProductType.INAPP)
+                .build()
+        }
+
+        let params = QueryProductDetailsParams.newBuilder()
+        params.setProductList(productList.toList())
+
+        let billingClient = try await connectBillingClient()
+        let productDetailsResult = withContext(Dispatchers.IO) {
+            billingClient.queryProductDetails(params.build())
+        }
+
+        guard let productDetailsList = productDetailsResult.productDetailsList else {
+            return []
+        }
+        return Array(productDetailsList).map({ ProductInfo(product: $0) })
+        #elseif canImport(StoreKit)
+        try await Product.products(for: identifiers).map({ ProductInfo(product: $0) })
+        #else
+        fatalError("Unsupported platform")
+        #endif
+    }
 
     // Design guides:
     // https://developer.android.com/guide/playcore/in-app-review#when-to-request
@@ -104,4 +215,43 @@ extension Marketplace.ReviewRequestDelay {
         })
     }
 }
+
+public struct ProductInfo {
+    #if SKIP
+    public typealias PlatformProduct = com.android.billingclient.api.ProductDetails
+    #else
+    public typealias PlatformProduct = Product
+    #endif
+
+    // SKIP @nobridge
+    public let product: PlatformProduct
+
+    init(product: PlatformProduct) {
+        self.product = product
+    }
+
+    public var id: String {
+        #if SKIP
+        product.getProductId()
+        #else
+        product.id
+        #endif
+    }
+
+    public var displayName: String {
+        #if SKIP
+        product.getTitle()
+        #else
+        product.displayName
+        #endif
+    }
+
+//    public var displayPrice: String {
+//        #if SKIP
+//        #else
+//        product.displayPrice
+//        #endif
+//    }
+}
+
 #endif

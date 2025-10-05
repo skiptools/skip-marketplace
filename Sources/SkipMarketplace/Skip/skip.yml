@@ -17,8 +17,8 @@ build:
         - 'implementation("com.google.android.play:app-update-ktx:2.1.0")'
 
         # https://developer.android.com/guide/playcore#java-kotlin-feature-delivery
-        - 'implementation("com.google.android.play:asset-delivery:2.3.0")'
-        - 'implementation("com.google.android.play:asset-delivery-ktx:2.3.0")'
+        - 'implementation("com.google.android.play:feature-delivery:2.1.0")'
+        - 'implementation("com.google.android.play:feature-delivery-ktx:2.1.0")'
 
         # https://developer.android.com/guide/playcore#java-kotlin-asset-delivery
         - 'implementation("com.google.android.play:asset-delivery:2.3.0")'
@@ -29,4 +29,4 @@ build:
         - 'implementation("com.android.billingclient:billing-ktx:8.0.0")'
 
         # https://developer.android.com/google/play/integrity/setup#kotlin-or-java
-        - 'implementation("com.google.android.play:integrity:1.5.0")'
+        #- 'implementation("com.google.android.play:integrity:1.5.0")'
