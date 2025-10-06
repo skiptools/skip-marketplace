@@ -54,7 +54,13 @@ and
 
 ### Android Configuration
 
-You must set the `com.android.vending.BILLING` property in your `AndroidManifest.xml` file.
+You must set the `com.android.vending.BILLING` permission in your `AndroidManifest.xml` file like so:
+
+```xml
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="com.android.vending.BILLING"/>
+</manifest>
+```
 
 ## Building
 
