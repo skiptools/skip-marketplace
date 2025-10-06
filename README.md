@@ -48,6 +48,13 @@ relevant documentation for the
 and
 [Google PlayStore](https://developer.apple.com/design/human-interface-guidelines/ratings-and-reviews#Best-practices).
 
+## Listing and purchasing digital goods
+
+
+
+### Android Configuration
+
+You must set the `com.android.vending.BILLING` property in your `AndroidManifest.xml` file.
 
 ## Building
 

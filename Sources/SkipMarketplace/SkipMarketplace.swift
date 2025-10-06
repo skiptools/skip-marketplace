@@ -11,6 +11,7 @@ import com.android.billingclient.api.BillingFlowParams
 import com.android.billingclient.api.BillingResult
 import com.android.billingclient.api.PendingPurchasesParams
 import com.android.billingclient.api.PurchasesUpdatedListener
+import com.android.billingclient.api.Purchase
 import com.android.billingclient.api.QueryProductDetailsParams
 import com.android.billingclient.api.queryProductDetails
 import kotlinx.coroutines.CoroutineScope
@@ -37,8 +38,23 @@ public struct Marketplace {
         // otherwise create a new billing client
         // https://developer.android.com/google/play/billing/integrate#connect_to_google_play
 
+        func purchasesUpdated(billingResult: BillingResult, purchases: List<Purchase>?) {
+            if billingResult.responseCode == BillingResponseCode.OK && purchases != nil {
+                // TODO: call back into a continuation that is set when purchase() is invoked
+            }
+        }
+
+        // Skip has no support for anonymous subclass creation, so we need to patch it in
+        /* SKIP INSERT:
+        val purchasesUpdatedListener = object : PurchasesUpdatedListener {
+            override fun onPurchasesUpdated(billingResult: BillingResult, purchases: List<Purchase>?) {
+                purchasesUpdated(billingResult, purchases)
+             }
+         }
+        */
+
         let billingClient = BillingClient.newBuilder(ProcessInfo.processInfo.androidContext)
-            //.setListener(purchasesUpdatedListener) // TODO
+            .setListener(purchasesUpdatedListener)
             // TODO: configure other settings
             //.enablePendingPurchases()
             .enableAutoServiceReconnection()
@@ -79,9 +95,9 @@ public struct Marketplace {
     /// https://developer.android.com/reference/com/android/billingclient/api/BillingClient.BillingResponseCode
     private func errorMessage(for billingResult: BillingResult) -> String {
         switch billingResult.responseCode {
+        case BillingResponseCode.ERROR: return "ERROR"
         case BillingResponseCode.BILLING_UNAVAILABLE: return "BILLING_UNAVAILABLE"
         case BillingResponseCode.DEVELOPER_ERROR: return "DEVELOPER_ERROR"
-        case BillingResponseCode.ERROR: return "ERROR"
         case BillingResponseCode.FEATURE_NOT_SUPPORTED: return "FEATURE_NOT_SUPPORTED"
         case BillingResponseCode.ITEM_ALREADY_OWNED: return "ITEM_ALREADY_OWNED"
         case BillingResponseCode.ITEM_NOT_OWNED: return "ITEM_NOT_OWNED"
@@ -119,6 +135,52 @@ public struct Marketplace {
         return Array(productDetailsList).map({ ProductInfo(product: $0) })
         #elseif canImport(StoreKit)
         try await Product.products(for: identifiers).map({ ProductInfo(product: $0) })
+        #else
+        fatalError("Unsupported platform")
+        #endif
+    }
+
+    /// Initiates a purchase for the given product with a confirmation sheet.
+    public func purchase(item: ProductInfo, quantity: Int? = nil) async throws {
+        #if SKIP
+        // https://developer.android.com/google/play/billing/integrate#launch
+        let params = BillingFlowParams.ProductDetailsParams.newBuilder()
+            .setProductDetails(item.product)
+            //.setOfferToken(selectedOfferToken) // TODO: offers
+            .build()
+        let billingFlowParams = BillingFlowParams.newBuilder()
+            .setProductDetailsParamsList(listOf(params))
+            .build()
+
+        guard let activity = UIApplication.shared.androidActivity else {
+            fatalError("No current UIApplication.shared.androidActivity")
+        }
+
+        // TODO: hook into the purchasesUpdated() callback above with a continuation that will be invoked when the purchase is completed
+
+        let result = try connectBillingClient().launchBillingFlow(activity, billingFlowParams)
+        if result.responseCode != BillingResponseCode.OK {
+            throw ErrorException(RuntimeException(errorMessage(for: result)))
+        }
+
+        // TODO: run continuation to get async result
+
+        #elseif canImport(StoreKit)
+        var opts: Set<Product.PurchaseOption> = []
+        if let quantity {
+            opts.insert(.quantity(quantity))
+        }
+
+        //opts.insert(.promotionalOffer(offerID: nil, signature: nil)) // TODO: offers
+
+        let result: Product.PurchaseResult = try await item.product.purchase(options: opts)
+
+        switch result {
+        case .userCancelled: break
+        case .pending: break
+        case .success(let verificationResult): break
+        @unknown default: break
+        }
         #else
         fatalError("Unsupported platform")
         #endif
@@ -216,6 +278,12 @@ extension Marketplace.ReviewRequestDelay {
     }
 }
 
+/// A wrapper around a market-specific product, such as
+/// [`StoreKit.Product`](https://developer.apple.com/documentation/storekit/product) on iOS
+/// and
+/// [`com.android.billingclient.api.ProductDetails`](https://developer.android.com/reference/com/android/billingclient/api/ProductDetails) on Android.
+///
+/// Note that the underlying `product: PlatformProduct` property can facilitate accessing platform-specific details.
 public struct ProductInfo {
     #if SKIP
     public typealias PlatformProduct = com.android.billingclient.api.ProductDetails
