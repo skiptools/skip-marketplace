@@ -13,6 +13,7 @@ import com.android.billingclient.api.BillingResult
 import com.android.billingclient.api.PendingPurchasesParams
 import com.android.billingclient.api.PurchasesUpdatedListener
 import com.android.billingclient.api.Purchase
+import com.android.billingclient.api.ProductDetails
 import com.android.billingclient.api.QueryProductDetailsParams
 import com.android.billingclient.api.queryProductDetails
 import kotlinx.coroutines.CoroutineScope
@@ -26,6 +27,12 @@ import StoreKit
 public struct Marketplace {
     /// The current marketplace for the environment
     nonisolated(unsafe) public static let current = Marketplace()
+
+    #if SKIP
+    public typealias PlatformPurchaseOptions = com.android.billingclient.api.BillingFlowParams.Builder
+    #elseif canImport(StoreKit)
+    public typealias PlatformPurchaseOptions = Set<Product.PurchaseOption>
+    #endif
 
     let logger: Logger = Logger(subsystem: "skip.marketplace", category: "Marketplace") // adb logcat '*:S' 'skip.marketplace.Marketplace:V'
 
@@ -142,14 +149,19 @@ public struct Marketplace {
     }
 
     /// Initiates a purchase for the given product with a confirmation sheet.
-    public func purchase(item: ProductInfo) async throws -> PurchaseResult? {
+    ///
+    /// On iOS, the `offer` parameter must be a win-back offer. Configure a promotional offer by passing it in via the `purchaseOptions` parameter,
+    /// leaving the `offer` parameter nil. (iOS applies introductory offers automatically.)
+    public func purchase(item: ProductInfo, offer: OfferInfo? = nil, purchaseOptions: PlatformPurchaseOptions? = nil) async throws -> PurchaseResult? {
         #if SKIP
         // https://developer.android.com/google/play/billing/integrate#launch
-        let params = BillingFlowParams.ProductDetailsParams.newBuilder()
+        let paramsBuilder = BillingFlowParams.ProductDetailsParams.newBuilder()
             .setProductDetails(item.product)
-            //.setOfferToken(selectedOfferToken) // TODO: offers
-            .build()
-        let billingFlowParams = BillingFlowParams.newBuilder()
+        if let offer, let offerToken = offer.offerToken {
+            paramsBuilder.setOfferToken(offerToken)
+        }
+        let params = paramsBuilder.build()
+        let billingFlowParams = (purchaseOptions ?? BillingFlowParams.newBuilder())
             .setProductDetailsParamsList(listOf(params))
             .build()
 
@@ -210,12 +222,20 @@ public struct Marketplace {
             }
         })
         #elseif canImport(StoreKit)
-        let opts: Set<Product.PurchaseOption> = []
-        //opts.insert(.promotionalOffer(offerID: nil, signature: nil)) // TODO: offers
-        //if let quantity {
-        //    opts.insert(.quantity(quantity))
-        //}
+        var opts: Set<Product.PurchaseOption> = purchaseOptions ?? []
 
+        if let offer {
+            guard let offer = offer as? SubscriptionOfferInfo else {
+                fatalError("Unsupported offer type")
+            }
+            if offer.type == .promotional {
+                fatalError("You can't pass a promotional offer to the purchase() method, because you have to sign them with your server-side app. Use the purchaseOptions parameter instead.")
+            } else if #available(iOS 18.0, macOS 15.0, *), offer.type == .winBack {
+                opts.insert(.winBackOffer(offer.offer))
+            } else {
+                fatalError("Unsupported offer type: \(offer.type)")
+            }
+        }
         let result: Product.PurchaseResult = try await item.product.purchase(options: opts)
 
         switch result {
@@ -373,7 +393,22 @@ public struct ProductInfo {
         product.displayName
         #endif
     }
-
+    
+    public var oneTimePurchaseOfferInfo: [OneTimePurchaseOfferInfo]? {
+        #if SKIP
+        if let offers = product.getOneTimePurchaseOfferDetailsList() {
+            return Array(offers).map { OneTimePurchaseOfferInfo(offer: $0) }
+        } else if let offer = product.getOneTimePurchaseOfferDetails() {
+            return [OneTimePurchaseOfferInfo(offer: offer)]
+        } else {
+            return nil
+        }
+        #else
+        guard !isSubscription else { return nil }
+        return [OneTimePurchaseOfferInfo(price: product.price, displayPrice: product.displayPrice)]
+        #endif
+    }
+    
     public var displayPrice: String? {
         #if SKIP
         if isSubscription, let sub = product.getSubscriptionOfferDetails()?.first() {
@@ -405,9 +440,102 @@ public struct ProductInfo {
         }
         return Array(subs).map({ SubscriptionOfferInfo(offer: $0) })
         #elseif canImport(StoreKit)
-        return product.subscription?.promotionalOffers.map({ SubscriptionOfferInfo(offer: $0) })
+        var results: [SubscriptionOfferInfo] = []
+        if let introductoryOffer = product.subscription?.introductoryOffer {
+            results.append(SubscriptionOfferInfo(offer: introductoryOffer))
+        }
+        if let promotionalOffers = product.subscription?.promotionalOffers {
+            results.append(contentsOf: promotionalOffers.map({ SubscriptionOfferInfo(offer: $0) }))
+        }
+        if #available(iOS 18.0, macOS 15.0, *) {
+            if let winBackOffers = product.subscription?.winBackOffers {
+                results.append(contentsOf: winBackOffers.map({ SubscriptionOfferInfo(offer: $0) }))
+            }
+        }
+        return results
         #endif
+    }
+}
 
+public protocol OfferInfo {
+    var id: String? { get }
+    #if SKIP
+    var offerToken: String? { get }
+    #endif
+}
+
+public struct OneTimePurchaseOfferInfo : OfferInfo {
+    #if SKIP
+    public typealias PlatformOneTimePurchaseOfferInfo = com.android.billingclient.api.ProductDetails.OneTimePurchaseOfferDetails
+    
+    let offer: PlatformOneTimePurchaseOfferInfo
+    init(offer: PlatformOneTimePurchaseOfferInfo) {
+        self.offer = offer
+    }
+    
+    public var price: Decimal {
+        return Decimal(offer.getPriceAmountMicros()) / Decimal(1_000_000)
+    }
+
+
+    public var displayPrice: String {
+        return offer.getFormattedPrice()
+    }
+    #else
+    public let price: Decimal
+    public let displayPrice: String
+    init(price: Decimal, displayPrice: String) {
+        self.price = price
+        self.displayPrice = displayPrice
+    }
+    #endif
+
+    public var id: String? {
+        #if SKIP
+        return offer.getOfferId()
+        #else
+        return nil
+        #endif
+    }
+    
+    public var fullPrice: Decimal? {
+        #if SKIP
+        guard let fullPriceMicros = offer.getFullPriceMicros() else { return nil }
+        return Decimal(fullPriceMicros) / 1_000_000 as Decimal
+        #else
+        return nil
+        #endif
+    }
+    
+    #if SKIP
+    public var offerToken: String? {
+        return offer.getOfferToken()
+    }
+    #endif
+
+    public var discountAmount: Decimal? {
+        #if SKIP
+        guard let discountAmountMicros = offer.getDiscountDisplayInfo()?.getDiscountAmount()?.getDiscountAmountMicros() else { return nil }
+        return Decimal(discountAmountMicros) / Decimal(1_000_000)
+        #else
+        return nil
+        #endif
+    }
+    
+    public var discountDisplayAmount: String? {
+        #if SKIP
+        return offer.getDiscountDisplayInfo()?.getDiscountAmount()?.getFormattedDiscountAmount()
+        #else
+        return nil
+        #endif
+    }
+
+    public var discountPercentage: Int? {
+        #if SKIP
+        return offer.getDiscountDisplayInfo()?.getPercentageDiscount()
+        #else
+        return nil
+        #endif
     }
 }
 
@@ -417,7 +545,7 @@ public struct ProductInfo {
 /// [`com.android.billingclient.api.ProductDetails.SubscriptionOfferDetails`](https://developer.android.com/reference/com/android/billingclient/api/ProductDetails.SubscriptionOfferDetails) on Android.
 ///
 /// Note that the underlying `product: PlatformProduct` property can facilitate accessing platform-specific details.
-public struct SubscriptionOfferInfo {
+public struct SubscriptionOfferInfo : OfferInfo {
     #if SKIP
     public typealias PlatformSubscriptionOffer = com.android.billingclient.api.ProductDetails.SubscriptionOfferDetails
     #elseif canImport(StoreKit)
@@ -438,6 +566,56 @@ public struct SubscriptionOfferInfo {
         return offer.id
         #endif
     }
+
+    public var pricingPhases: [SubscriptionPricingPhase] {
+        #if SKIP
+        return Array(offer.getPricingPhases().getPricingPhaseList()).map { SubscriptionPricingPhase(phase: $0) }
+        #elseif canImport(StoreKit)
+        return [SubscriptionPricingPhase(phase: offer)]
+        #endif
+    }
+
+    #if SKIP
+    public var offerToken: String? {
+        return offer.getOfferToken()
+    }
+    #elseif canImport(StoreKit)
+    public var type: Product.SubscriptionOffer.OfferType {
+        return offer.type
+    }
+    #endif
+}
+
+public struct SubscriptionPricingPhase {
+    #if SKIP
+    public typealias PlatformSubscriptionPricingPhase = com.android.billingclient.api.ProductDetails.PricingPhase
+    #elseif canImport(StoreKit)
+    public typealias PlatformSubscriptionPricingPhase = StoreKit.Product.SubscriptionOffer
+    #endif
+
+    // SKIP @nobridge
+    public let phase: PlatformSubscriptionPricingPhase
+    init(phase: PlatformSubscriptionPricingPhase) {
+        self.phase = phase
+    }
+
+    public var price: Decimal {
+        #if SKIP
+        return Decimal(phase.getPriceAmountMicros()) / Decimal(1_000_000)
+        #elseif canImport(StoreKit)
+        return phase.price
+        #endif
+    }
+    
+    public var displayPrice: String {
+        #if SKIP
+        return phase.getFormattedPrice()
+        #elseif canImport(StoreKit)
+        return phase.displayPrice
+        #endif
+    }
+
+    // TODO subscription period, duration
 }
 
 /// A wrapper around a market-specific purchase result, such as
