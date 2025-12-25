@@ -150,7 +150,16 @@ public struct Marketplace: Sendable {
 
     #if SKIP
     private var activeBillingClient: BillingClient? = nil
-    private var purchasesUpdatedListeners: [(PurchaseResultInfo) -> ()] = []
+    
+    private class PurchaseListenerWrapper {
+        let listener: (PurchaseResultInfo) -> ()
+        let once: Bool
+        init(once: Bool = false, listener: @escaping (PurchaseResultInfo) -> ()) {
+            self.once = once
+            self.listener = listener
+        }
+    }
+    private var purchasesUpdatedListeners: [PurchaseListenerWrapper] = []
 
     private struct PurchaseResultInfo {
         let result: BillingResult
@@ -167,9 +176,11 @@ public struct Marketplace: Sendable {
         // https://developer.android.com/google/play/billing/integrate#connect_to_google_play
 
         func purchasesUpdated(billingResult: BillingResult, purchases: List<Purchase>?) {
-            for purchasesUpdatedListener in purchasesUpdatedListeners {
-                purchasesUpdatedListener(PurchaseResultInfo(billingResult, purchases))
+            let purchaseResultInfo = PurchaseResultInfo(billingResult, purchases)
+            for wrapper in purchasesUpdatedListeners {
+                wrapper.listener(purchaseResultInfo)
             }
+            purchasesUpdatedListeners.removeAll(where: { $0.once })
         }
 
         let billingClient = BillingClient.newBuilder(ProcessInfo.processInfo.androidContext)
@@ -285,10 +296,9 @@ public struct Marketplace: Sendable {
 
         let purchaseResult: PurchaseResultInfo = try await withCheckedThrowingContinuation { continuation in
             // hook into the purchasesUpdated() callback above with a continuation that will be invoked when the purchase is completed
-            purchasesUpdatedListeners.append({ purchaseResult in
+            purchasesUpdatedListeners.append(PurchaseListenerWrapper(once: true) { purchaseResult in
                 logger.info("purchases updated: result=\(purchaseResult.result) purchases=\(purchaseResult.purchases)")
                 continuation.resume(returning: purchaseResult)
-                purchasesUpdatedListeners.removeAll() // remove all listeners (we currently only support one at a time)
             })
 
             let result = billingClient.launchBillingFlow(activity, billingFlowParams)
@@ -426,6 +436,52 @@ public struct Marketplace: Sendable {
         }
         #elseif canImport(StoreKit)
         await purchaseTransaction.purchaseTransaction.finish()
+        #else
+        fatalError("Unsupported platform")
+        #endif
+    }
+    
+    public func getPurchaseTransactionUpdates() -> AsyncThrowingStream<PurchaseTransaction, Error> {
+        #if SKIP
+        return AsyncThrowingStream { continuation in
+            
+            let wrapper = PurchaseListenerWrapper { purchaseResult in
+                if purchaseResult.result.responseCode == BillingClient.BillingResponseCode.OK,
+                   let purchases = purchaseResult.purchases {
+                    for purchase in purchases {
+                        continuation.yield(PurchaseTransaction(purchase))
+                    }
+                }
+            }
+            purchasesUpdatedListeners.append(wrapper)
+            
+            continuation.onTermination = { @Sendable _ in
+                purchasesUpdatedListeners.removeAll(where: { $0 === wrapper })
+            }
+
+            // Ensure billing client is connected
+            Task {
+                do {
+                    _ = try await connectBillingClient()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+        #elseif canImport(StoreKit)
+        return AsyncThrowingStream { continuation in
+            Task {
+                for await verificationResult in Transaction.updates {
+                    switch verificationResult {
+                    case .verified(let transaction):
+                        continuation.yield(PurchaseTransaction(transaction))
+                    case .unverified(let unverifiedTransaction, let verificationError):
+                        logger.info("Unverified transaction \(String(describing: unverifiedTransaction)), error: \(String(describing: verificationError))")
+                    }
+                }
+                continuation.finish()
+            }
+        }
         #else
         fatalError("Unsupported platform")
         #endif
