@@ -18,16 +18,108 @@ import com.android.billingclient.api.queryProductDetails
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-#elseif canImport(StoreKit)
+#else
+#if canImport(StoreKit)
 import StoreKit
+#endif
+#if canImport(MarketplaceKit)
+import MarketplaceKit
+#endif
 #endif
 
 /// An interface to the platform's app marketplace, such as the Apple App Store or the Google Play Store.
+///
+/// Mostly conforms to the [OpenIAP](https://www.openiap.dev) specification.
 public struct Marketplace {
     /// The current marketplace for the environment
     nonisolated(unsafe) public static let current = Marketplace()
 
     let logger: Logger = Logger(subsystem: "skip.marketplace", category: "Marketplace") // adb logcat '*:S' 'skip.marketplace.Marketplace:V'
+
+    public enum InstallationSource {
+        // MARK: Android app sources
+
+        case googlePlayStore
+
+        // MARK: iOS app sources
+
+        case appleAppStore
+        case testFlight
+        case marketplace(bundleId: String)
+        case web
+
+        // MARK: Other app sources
+
+        /// Can be an alternative app marketplace (like AltStore: "com.rileytestut.AltStore") or Android identifier (like F-Droid: "org.fdroid.fdroid")
+        case other(_ name: String?)
+        case unknown
+
+        /// Returns true when this source is either the Google Play Store or Apple App Store
+        public var isFirstPartyAppStore: Bool {
+            switch self {
+            case .appleAppStore, .googlePlayStore: return true
+            default: return false
+            }
+        }
+    }
+    
+    /// The installation source for the current app, which can be used to determine what payment options and features are available
+    public var installationSource: InstallationSource {
+        get async {
+            #if SKIP
+            let context = ProcessInfo.processInfo.androidContext
+            var packageManager = context.packageManager
+            var packageName = context.packageName
+
+            var installerPackageName: String? = nil
+            if android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R {
+                installerPackageName = packageManager.getInstallSourceInfo(packageName).installingPackageName
+            } else {
+                @Suppress("DEPRECATION")
+                installerPackageName = packageManager.getInstallerPackageName(packageName)
+            }
+
+            guard let installerPackageName, !installerPackageName.isEmpty else {
+                return .unknown
+            }
+
+            switch installerPackageName {
+            case "com.android.vending": return .googlePlayStore
+            case "com.google.android.feedback": return .googlePlayStore
+            default: return .other(installerPackageName)
+            //case "org.fdroid.fdroid": return .other("F-Droid")
+            //case "com.amazon.venezia": return .other("Amazon App Store")
+            //case "com.sec.android.app.samsungapps": return .other("Samsung Galaxy Store")
+            //case "com.huawei.appmarket": return .other("Huawei AppGallery")
+            }
+            #elseif canImport(MarketplaceKit)
+            if #available(iOS 17.4, *) {
+                let currentDistributor = try? await AppDistributor.current
+                switch currentDistributor {
+                case .none:
+                    return .unknown
+                case .appStore:
+                    return .appleAppStore
+                case .testFlight:
+                    return .testFlight
+                case .marketplace(let bundleId):
+                    return .marketplace(bundleId: bundleId)
+                case .web:
+                    return .web
+                case .other:
+                    return .other(nil)
+                @unknown default:
+                    return .unknown
+                }
+            } else {
+                return .unknown
+            }
+            #else
+            return .unknown
+            #endif
+        }
+    }
+
 
     #if SKIP
     private var activeBillingClient: BillingClient? = nil
