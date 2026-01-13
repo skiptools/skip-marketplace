@@ -61,7 +61,12 @@ default: canUseNativeBillling = false
 }
 ```
 
-## Listing and purchasing digital goods
+## Listing and purchasing in-app purchases
+
+> [!TIP]
+> Managing in-app purchases in SkipMarketplace works best for non-consumable one-time-product entitlements, products that the user buys once and owns forever. You can use it for one-time-product consumables and subscriptions, but it's best to integrate those tightly with a server-side database that tracks purchases, consumptions and expirations. Your server-side web app can also sign promotional offers, accepts webhook notifications from the app stores, etc.
+>
+> Rather than building all of that yourself to integrate with SkipMarketplace, you might prefer to use [RevenueCat](https://www.revenuecat.com/) for this, using the [skip-revenue](https://github.com/skiptools/skip-revenue) library. (RevenueCat does cost money; if you want to roll your own subscription-management software, you can do it with SkipMarketplace.)
 
 ### Android Configuration
 
@@ -72,6 +77,132 @@ You must set the `com.android.vending.BILLING` permission in your `AndroidManife
     <uses-permission android:name="com.android.vending.BILLING"/>
 </manifest>
 ```
+
+### Start by defining your products in App Store Connect and/or the Google Play Store
+
+* One-time products
+    * App Store Connect: [Create consumable or non-consumable In-App Purchases](https://developer.apple.com/help/app-store-connect/manage-in-app-purchases/create-consumable-or-non-consumable-in-app-purchases/)
+    * Google Play Console: [Overview of one-time products](https://support.google.com/googleplay/android-developer/answer/16430488)
+* Subscriptions
+    * App Store Connect: [Offer auto-renewable subscriptions](https://developer.apple.com/help/app-store-connect/manage-subscriptions/offer-auto-renewable-subscriptions)
+    * Google Play Console: [Create and manage subscriptions](https://support.google.com/googleplay/android-developer/answer/140504?hl=en)
+
+### One-Time Purchases: Fetch ProductInfo and Prices
+
+```swift
+do {
+    let productIdentifiers = ["product1", "product2", "product3"]
+    let products: [ProductInfo] = try await Marketplace.current.fetchProducts(
+        for: productIdentifiers,
+        subscription: false
+    )
+
+    for product in products {
+        print("product \(product.id) \(product.displayName)")
+        let oneTimePurchaseOfferInfo: [OneTimePurchaseOfferInfo] = product.oneTimePurchaseOfferInfo!
+        for offer in oneTimePurchaseOfferInfo {
+            // On iOS, there will be only one offer, and its ID will be nil
+            // On GPS, there may be multiple offers, if you configured additional offers in the console
+            print("product \(product.id) offer \(offer.id ?? "nil") \(offer.displayPrice) \(offer.price)")
+        }
+    }
+}
+```
+
+### Subscriptions: Fetch ProductInfo and Prices
+
+```swift
+do {
+    let productIdentifiers = ["product1", "product2", "product3"]
+    let products: [ProductInfo] = try await Marketplace.current.fetchProducts(for: productIdentifiers, subscription: true)
+
+    for product in products {
+        print("product \(product.id) \(product.displayName)")
+        let subscriptionOffers: [SubscriptionOfferInfo] = product.subscriptionOffers!
+        for offer in subscriptionOffers {
+            #if !SKIP
+            print("product \(product.id) offer \(offer.id ?? "nil") type \(offer.type)")
+            #endif
+            let pricingPhases: [SubscriptionPricingPhase] = offer.pricingPhases
+            for pricingPhase in pricingPhases {
+                print("product \(product.id) offer \(offer.id ?? "nil") \(pricingPhase.displayPrice) \(pricingPhase.price)")
+            }
+        }
+    }
+} catch {
+    print("Error fetching products: \(error)")
+}
+```
+
+### Purchasing (displaying a purchase sheet)
+
+```swift
+do {
+    let product: ProductInfo = try await Marketplace.current.fetchProducts(for: ["productIdentifier"], subscription: false).first!
+    if let purchaseTransaction: PurchaseTransaction = try await Marketplace.current.purchase(item: product) {
+        print("Purchased \(purchaseTransaction.products)")
+        // after you've stored the transaction somewhere, you should finish every PurchaseTransaction to acknowledge receipt
+        try await Marketplace.current.finish(purchaseTransaction: purchaseTransaction)
+    }
+} catch {
+    print("Error purchasing product: \(error)")
+}
+```
+
+You can also pass in a purchase offer (with a discounted price).
+
+```swift
+do {
+    let product: ProductInfo = try await Marketplace.current.fetchProducts(for: ["productIdentifier"], subscription: false).first!
+    let offer = product.oneTimePurchaseOfferInfo.first!
+    if let purchaseTransaction: PurchaseTransaction = try await Marketplace.current.purchase(item: product, offer: offer) {
+        print("Purchased \(purchaseTransaction.products)")
+        // after you've stored the transaction somewhere, you should finish every PurchaseTransaction to acknowledge receipt
+        try await Marketplace.current.finish(purchaseTransaction: purchaseTransaction)
+    }
+} catch {
+    print("Error purchasing product: \(error)")
+}
+```
+
+### Querying for entitlements
+
+"Entitlements" ane non-consumable one-time products and subscriptions, something that the user is entitled to because they've currently purchased it.
+
+```swift
+do {
+    let entitlements: [PurchaseTransaction] = try await Marketplace.current.fetchEntitlements()
+    for purchaseTransaction in entitlements {
+        let products: [String] = purchaseTransaction.products
+        print("You own \(products)")
+        // after you've stored the transaction somewhere, you should finish every PurchaseTransaction to acknowledge receipt
+        // it's OK to "finish" the same transaction more than once
+        try await Marketplace.current.finish(purchaseTransaction: purchaseTransaction)
+    }
+} catch {
+    print("Error fetching entitlements: \(error)")
+}
+```
+
+### Handling updates to purchase transactions
+
+```swift
+do {
+    for try await purchaseTransaction in Marketplace.current.getPurchaseTransactionUpdates() {
+        print("Transaction update: \(purchaseTransaction)")
+        // after you've stored the transaction somewhere, you should finish every PurchaseTransaction to acknowledge receipt
+        // it's OK to "finish" the same transaction more than once
+        try await Marketplace.current.finish(purchaseTransaction: purchaseTransaction)
+    }
+} catch {
+    print("Error loading transaction updates: \(error)")
+}
+```
+
+### Testing purchases during development
+
+* iOS: [Setting up StoreKit testing in Xcode](https://developer.apple.com/documentation/xcode/setting-up-storekit-testing-in-xcode)
+* Google Play: [Test your Google Play Billing Library integration](https://developer.android.com/google/play/billing/test)
 
 ## Building
 
