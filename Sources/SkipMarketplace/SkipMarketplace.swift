@@ -30,13 +30,13 @@ import MarketplaceKit
 /// An interface to the platform's app marketplace, such as the Apple App Store or the Google Play Store.
 ///
 /// Mostly conforms to the [OpenIAP](https://www.openiap.dev) specification.
-public struct Marketplace {
+public struct Marketplace: Sendable {
     /// The current marketplace for the environment
-    nonisolated(unsafe) public static let current = Marketplace()
+    public static let current = Marketplace()
 
     let logger: Logger = Logger(subsystem: "skip.marketplace", category: "Marketplace") // adb logcat '*:S' 'skip.marketplace.Marketplace:V'
 
-    public enum InstallationSource {
+    public enum InstallationSource: Sendable {
         // MARK: Android app sources
 
         case googlePlayStore
