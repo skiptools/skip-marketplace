@@ -16,6 +16,7 @@ import com.android.billingclient.api.Purchase
 import com.android.billingclient.api.ProductDetails
 import com.android.billingclient.api.QueryProductDetailsParams
 import com.android.billingclient.api.queryProductDetails
+import com.android.billingclient.api.QueryPurchasesParams
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -149,7 +150,16 @@ public struct Marketplace: Sendable {
 
     #if SKIP
     private var activeBillingClient: BillingClient? = nil
-    private var purchasesUpdatedListeners: [(PurchaseResultInfo) -> ()] = []
+    
+    private class PurchaseListenerWrapper {
+        let listener: (PurchaseResultInfo) -> ()
+        let once: Bool
+        init(once: Bool = false, listener: @escaping (PurchaseResultInfo) -> ()) {
+            self.once = once
+            self.listener = listener
+        }
+    }
+    private var purchasesUpdatedListeners: [PurchaseListenerWrapper] = []
 
     private struct PurchaseResultInfo {
         let result: BillingResult
@@ -166,9 +176,11 @@ public struct Marketplace: Sendable {
         // https://developer.android.com/google/play/billing/integrate#connect_to_google_play
 
         func purchasesUpdated(billingResult: BillingResult, purchases: List<Purchase>?) {
-            for purchasesUpdatedListener in purchasesUpdatedListeners {
-                purchasesUpdatedListener(PurchaseResultInfo(billingResult, purchases))
+            let purchaseResultInfo = PurchaseResultInfo(billingResult, purchases)
+            for wrapper in purchasesUpdatedListeners {
+                wrapper.listener(purchaseResultInfo)
             }
+            purchasesUpdatedListeners.removeAll(where: { $0.once })
         }
 
         let billingClient = BillingClient.newBuilder(ProcessInfo.processInfo.androidContext)
@@ -176,7 +188,7 @@ public struct Marketplace: Sendable {
                 purchasesUpdated(billingResult, purchases)
             })
             // TODO: configure other settings
-            //.enablePendingPurchases()
+            .enablePendingPurchases(PendingPurchasesParams.newBuilder().enableOneTimeProducts().build())
             .enableAutoServiceReconnection()
             .build()
 
@@ -263,7 +275,7 @@ public struct Marketplace: Sendable {
     ///
     /// On iOS, the `offer` parameter must be a win-back offer. Configure a promotional offer by passing it in via the `purchaseOptions` parameter,
     /// leaving the `offer` parameter nil. (iOS applies introductory offers automatically.)
-    public func purchase(item: ProductInfo, offer: OfferInfo? = nil, purchaseOptions: PlatformPurchaseOptions? = nil) async throws -> PurchaseResult? {
+    public func purchase(item: ProductInfo, offer: OfferInfo? = nil, purchaseOptions: PlatformPurchaseOptions? = nil) async throws -> PurchaseTransaction? {
         #if SKIP
         // https://developer.android.com/google/play/billing/integrate#launch
         let paramsBuilder = BillingFlowParams.ProductDetailsParams.newBuilder()
@@ -284,10 +296,9 @@ public struct Marketplace: Sendable {
 
         let purchaseResult: PurchaseResultInfo = try await withCheckedThrowingContinuation { continuation in
             // hook into the purchasesUpdated() callback above with a continuation that will be invoked when the purchase is completed
-            purchasesUpdatedListeners.append({ purchaseResult in
+            purchasesUpdatedListeners.append(PurchaseListenerWrapper(once: true) { purchaseResult in
                 logger.info("purchases updated: result=\(purchaseResult.result) purchases=\(purchaseResult.purchases)")
                 continuation.resume(returning: purchaseResult)
-                purchasesUpdatedListeners.removeAll() // remove all listeners (we currently only support one at a time)
             })
 
             let result = billingClient.launchBillingFlow(activity, billingFlowParams)
@@ -311,27 +322,7 @@ public struct Marketplace: Sendable {
             throw ErrorException(RuntimeException("Successful purchase returned no purchases"))
         }
 
-        return PurchaseResult(purchase: purchase, completion: {
-            if purchase.isAcknowledged {
-                return
-            }
-            let ackParam = AcknowledgePurchaseParams.newBuilder()
-                .setPurchaseToken(purchase.purchaseToken)
-                .build()
-
-            let client = try await connectBillingClient() // this may be deferred, so re-connected if needed
-            try await withCheckedThrowingContinuation { continuation in
-                client.acknowledgePurchase(ackParam) { result in
-                    if result.responseCode == BillingClient.BillingResponseCode.OK {
-                        logger.info("acknowledged purchase: \(purchase.purchaseToken)")
-                        continuation.resume(returning: ()) // success
-                    } else {
-                        logger.info("acknowledged purchase error for: \(purchase.purchaseToken) error: \(result)")
-                        continuation.resume(throwing: ErrorException(RuntimeException(errorMessage(for: result))))
-                    }
-                }
-            }
-        })
+        return PurchaseTransaction(purchase)
         #elseif canImport(StoreKit)
         var opts: Set<Product.PurchaseOption> = purchaseOptions ?? []
 
@@ -362,15 +353,134 @@ public struct Marketplace: Sendable {
             case .unverified(_, let error):
                 throw error // fail when the transaction was not verified
             case .verified(let transaction):
-                // TODO: return a value that allows the app to call finish()
-                // https://developer.apple.com/documentation/storekit/transaction/finish()
-                return PurchaseResult(purchase: transaction, completion: {
-                    await transaction.finish()
-                })
+                return PurchaseTransaction(transaction)
             }
         @unknown default:
             logger.info("purchase of item \(item.id) unknown result: \(String(describing: result))")
             return nil
+        }
+        #else
+        fatalError("Unsupported platform")
+        #endif
+    }
+    
+    #if SKIP
+    private func queryPurchasesAsync(_ productType: String) async throws -> List<Purchase> {
+        let billingClient = try await connectBillingClient()
+        let params = QueryPurchasesParams.newBuilder()
+            .setProductType(productType)
+            .build()
+        
+        return try await withCheckedThrowingContinuation { continuation in
+            billingClient.queryPurchasesAsync(params) { billingResult, purchases in
+                if billingResult.responseCode == BillingClient.BillingResponseCode.OK {
+                    continuation.resume(returning: purchases)
+                } else {
+                    continuation.resume(throwing: ErrorException(RuntimeException(errorMessage(for: billingResult))))
+                }
+            }
+        }
+    }
+    #endif
+    
+    public func fetchEntitlements() async throws -> [PurchaseTransaction] {
+        var result: [PurchaseTransaction] = []
+        #if SKIP
+        async let inAppPurchases = try await queryPurchasesAsync(BillingClient.ProductType.INAPP)
+        async let subsPurchases = try await queryPurchasesAsync(BillingClient.ProductType.SUBS)
+        
+        for purchase in try await inAppPurchases {
+            if purchase.getPurchaseState() == Purchase.PurchaseState.PURCHASED {
+                result.append(PurchaseTransaction(purchase))
+            }
+        }
+        
+        for purchase in try await subsPurchases {
+            if purchase.getPurchaseState() == Purchase.PurchaseState.PURCHASED {
+                result.append(PurchaseTransaction(purchase))
+            }
+        }
+        
+        return result
+        #elseif canImport(StoreKit)
+        for await verificationResult in Transaction.currentEntitlements {
+            switch verificationResult {
+            case .verified(let transaction):
+                result.append(PurchaseTransaction(transaction))
+            case .unverified(let unverifiedTransaction, let verificationError):
+                print("Unverified transaction \(unverifiedTransaction), error: \(verificationError)")
+            }
+        }
+        return result
+        #else
+        fatalError("Unsupported platform")
+        #endif
+    }
+    
+    /// A purchase transaction must be finished or else it will be in a pending state, or may be automatically refunded.
+    ///
+    /// See: https://developer.apple.com/documentation/storekit/transaction/finish()
+    /// See: https://developer.android.com/reference/com/android/billingclient/api/BillingClient#acknowledgePurchase(com.android.billingclient.api.AcknowledgePurchaseParams,com.android.billingclient.api.AcknowledgePurchaseResponseListener)
+    public func finish(purchaseTransaction: PurchaseTransaction) async throws {
+        #if SKIP
+        let billingClient = try await connectBillingClient()
+        try await withCheckedThrowingContinuation { continuation in
+            let params = AcknowledgePurchaseParams.newBuilder().setPurchaseToken(purchaseTransaction.purchaseTransaction.getPurchaseToken()).build();
+            billingClient.acknowledgePurchase(params) { billingResult in
+                if billingResult.responseCode == BillingClient.BillingResponseCode.OK {
+                    continuation.resume(returning: ())
+                } else {
+                    continuation.resume(throwing: ErrorException(RuntimeException(errorMessage(for: billingResult))))
+                }
+            }
+        }
+        #elseif canImport(StoreKit)
+        await purchaseTransaction.purchaseTransaction.finish()
+        #else
+        fatalError("Unsupported platform")
+        #endif
+    }
+    
+    public func getPurchaseTransactionUpdates() -> AsyncThrowingStream<PurchaseTransaction, Error> {
+        #if SKIP
+        return AsyncThrowingStream { continuation in
+            
+            let wrapper = PurchaseListenerWrapper { purchaseResult in
+                if purchaseResult.result.responseCode == BillingClient.BillingResponseCode.OK,
+                   let purchases = purchaseResult.purchases {
+                    for purchase in purchases {
+                        continuation.yield(PurchaseTransaction(purchase))
+                    }
+                }
+            }
+            purchasesUpdatedListeners.append(wrapper)
+            
+            continuation.onTermination = { @Sendable _ in
+                purchasesUpdatedListeners.removeAll(where: { $0 === wrapper })
+            }
+
+            // Ensure billing client is connected
+            Task {
+                do {
+                    _ = try await connectBillingClient()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+        #elseif canImport(StoreKit)
+        return AsyncThrowingStream { continuation in
+            Task {
+                for await verificationResult in Transaction.updates {
+                    switch verificationResult {
+                    case .verified(let transaction):
+                        continuation.yield(PurchaseTransaction(transaction))
+                    case .unverified(let unverifiedTransaction, let verificationError):
+                        logger.info("Unverified transaction \(String(describing: unverifiedTransaction)), error: \(String(describing: verificationError))")
+                    }
+                }
+                continuation.finish()
+            }
         }
         #else
         fatalError("Unsupported platform")
@@ -437,6 +547,46 @@ public struct Marketplace: Sendable {
         public func checkReviewDelay() -> Bool {
             shouldCheckReview()
         }
+    }
+}
+
+/// A wrapper around a market-specific purchase result, such as
+/// [`StoreKit.Transaction`](https://developer.apple.com/documentation/storekit/transaction) on iOS
+/// and
+/// [`com.android.billingclient.api.Purchase`](https://developer.android.com/reference/com/android/billingclient/api/Purchase) on Android.
+///
+/// Note that the underlying `purchaseTransaction: PlatformPurchaseTransaction` property can facilitate accessing platform-specific details.
+public struct PurchaseTransaction {
+    #if SKIP
+    public typealias PlatformPurchaseTransaction = com.android.billingclient.api.Purchase
+    #elseif canImport(StoreKit)
+    public typealias PlatformPurchaseTransaction = StoreKit.Transaction
+    #endif
+    
+    // SKIP @nobridge
+    public let purchaseTransaction: PlatformPurchaseTransaction
+    init(_ purchaseTransaction: PlatformPurchaseTransaction) {
+        self.purchaseTransaction = purchaseTransaction
+    }
+    
+    public var id: String? {
+        #if SKIP
+        return purchaseTransaction.getOrderId()
+        #elseif canImport(StoreKit)
+        return String(purchaseTransaction.id)
+        #else
+        fatalError("Unsupported platform")
+        #endif
+    }
+    
+    public var products: [String] {
+        #if SKIP
+        return Array(purchaseTransaction.getProducts())
+        #elseif canImport(StoreKit)
+        return [purchaseTransaction.productID]
+        #else
+        fatalError("Unsupported platform")
+        #endif
     }
 }
 
@@ -727,39 +877,6 @@ public struct SubscriptionPricingPhase {
     }
 
     // TODO subscription period, duration
-}
-
-/// A wrapper around a market-specific purchase result, such as
-/// [`StoreKit.Transaction`](https://developer.apple.com/documentation/storekit/transaction) on iOS
-/// and
-/// [`com.android.billingclient.api.Purchase`](https://developer.android.com/reference/com/android/billingclient/api/Purchase) on Android.
-///
-/// Note that the underlying `product: PlatformProduct` property can facilitate accessing platform-specific details.
-public struct PurchaseResult {
-    #if SKIP
-    public typealias PlatformPurchase = com.android.billingclient.api.Purchase
-    #elseif canImport(StoreKit)
-    public typealias PlatformPurchase = StoreKit.Transaction
-    #endif
-
-    // SKIP @nobridge
-    public let purchase: PlatformPurchase
-
-    // purchase completion callback block
-    let completion: () async throws -> Void
-
-    init(purchase: PlatformPurchase, completion: @escaping () async throws -> Void) {
-        self.purchase = purchase
-        self.completion = completion
-    }
-
-    /// A purchase result must be completed or else it will be in a pending state, or may be automatically refunded.
-    ///
-    /// See: https://developer.apple.com/documentation/storekit/transaction/finish()
-    /// See: https://developer.android.com/reference/com/android/billingclient/api/BillingClient#acknowledgePurchase(com.android.billingclient.api.AcknowledgePurchaseParams,com.android.billingclient.api.AcknowledgePurchaseResponseListener)
-    public func complete() async throws {
-        try await self.completion()
-    }
 }
 
 #endif
