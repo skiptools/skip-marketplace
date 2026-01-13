@@ -36,7 +36,7 @@ public struct Marketplace: Sendable {
 
     let logger: Logger = Logger(subsystem: "skip.marketplace", category: "Marketplace") // adb logcat '*:S' 'skip.marketplace.Marketplace:V'
 
-    public enum InstallationSource: Sendable {
+    public enum InstallationSource: Sendable, CustomStringConvertible {
         // MARK: Android app sources
 
         case googlePlayStore
@@ -59,6 +59,25 @@ public struct Marketplace: Sendable {
             switch self {
             case .appleAppStore, .googlePlayStore: return true
             default: return false
+            }
+        }
+
+        public var description: String {
+            switch self {
+            case .googlePlayStore:
+                return "googlePlayStore"
+            case .appleAppStore:
+                return "appleAppStore"
+            case .testFlight:
+                return "testFlight"
+            case .marketplace(bundleId: let bundleId):
+                return "marketplace(\(bundleId))"
+            case .web:
+                return "web"
+            case .other(let name):
+                return "other(\(name ?? ""))"
+            case .unknown:
+                return "unknown"
             }
         }
     }
