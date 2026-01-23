@@ -21,7 +21,7 @@ let package = Package(
         .library(name: "MyProduct", targets: ["MyTarget"]),
     ],
     dependencies: [
-        .package(url: "https://source.skip.tools/skip-marketplace.git", "0.0.0"..<"2.0.0"),
+        .package(url: "https://source.skip.dev/skip-marketplace.git", "0.0.0"..<"2.0.0"),
     ],
     targets: [
         .target(name: "MyTarget", dependencies: [
@@ -207,7 +207,7 @@ do {
 ## Building
 
 This project is a free Swift Package Manager module that uses the
-[Skip](https://skip.tools) plugin to transpile Swift into Kotlin.
+[Skip](https://skip.dev) plugin to transpile Swift into Kotlin.
 
 Building the module requires that Skip be installed using
 [Homebrew](https://brew.sh) with `brew install skiptools/skip/skip`.
