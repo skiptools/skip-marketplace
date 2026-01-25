@@ -31,6 +31,9 @@
         }
       }
     },
+    "A new version is available. Please update to get the latest features and improvements." : {
+
+    },
     "Add" : {
       "comment" : "Button in items list that will cause a new item to be added",
       "extractionState" : "stale",
@@ -270,6 +273,9 @@
           }
         }
       }
+    },
+    "Later" : {
+
     },
     "Light" : {
       "comment" : "Menu item indicating that the appearance should be in light mode",
@@ -511,6 +517,12 @@
         }
       }
     },
+    "Update" : {
+
+    },
+    "Update Available" : {
+
+    },
     "Version %@ (%@)" : {
       "comment" : "Settings label showing the current version of the app",
       "extractionState" : "stale",
@@ -546,6 +558,9 @@
           }
         }
       }
+    },
+    "Version %@ is available. Please update to get the latest features and improvements." : {
+
     },
     "Welcome" : {
       "comment" : "Tab bar item title for the Welcome tab",
