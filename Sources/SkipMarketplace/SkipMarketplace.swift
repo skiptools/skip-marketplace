@@ -588,6 +588,97 @@ public struct PurchaseTransaction {
         fatalError("Unsupported platform")
         #endif
     }
+
+    /// The date the purchase was made.
+    public var purchaseDate: Date {
+        #if SKIP
+        return Date(timeIntervalSince1970: Double(purchaseTransaction.getPurchaseTime()) / 1000.0)
+        #elseif canImport(StoreKit)
+        return purchaseTransaction.purchaseDate
+        #else
+        fatalError("Unsupported platform")
+        #endif
+    }
+
+    /// The quantity of items purchased. Typically 1.
+    public var quantity: Int {
+        #if SKIP
+        return purchaseTransaction.getQuantity()
+        #elseif canImport(StoreKit)
+        return purchaseTransaction.purchasedQuantity
+        #else
+        fatalError("Unsupported platform")
+        #endif
+    }
+
+    /// The expiration date for subscription purchases, or `nil` for non-subscriptions.
+    public var expirationDate: Date? {
+        #if SKIP
+        return nil // Android Purchase does not directly expose expiration; use server verification
+        #elseif canImport(StoreKit)
+        return purchaseTransaction.expirationDate
+        #else
+        fatalError("Unsupported platform")
+        #endif
+    }
+
+    /// Whether the purchase has been acknowledged/finished.
+    public var isAcknowledged: Bool {
+        #if SKIP
+        return purchaseTransaction.isAcknowledged()
+        #elseif canImport(StoreKit)
+        return true // StoreKit transactions obtained from currentEntitlements are already verified
+        #else
+        fatalError("Unsupported platform")
+        #endif
+    }
+
+    /// Whether the purchase is set to auto-renew (subscriptions only).
+    public var isAutoRenewing: Bool {
+        #if SKIP
+        return purchaseTransaction.isAutoRenewing()
+        #elseif canImport(StoreKit)
+        if purchaseTransaction.revocationDate != nil {
+            return false
+        }
+        return purchaseTransaction.expirationDate != nil
+        #else
+        fatalError("Unsupported platform")
+        #endif
+    }
+
+    /// The date the purchase was revoked, or `nil` if not revoked.
+    public var revocationDate: Date? {
+        #if SKIP
+        return nil // Android Purchase does not expose revocation date
+        #elseif canImport(StoreKit)
+        return purchaseTransaction.revocationDate
+        #else
+        fatalError("Unsupported platform")
+        #endif
+    }
+
+    /// The original transaction ID. For renewals, this is the ID of the original purchase.
+    public var originalID: String? {
+        #if SKIP
+        return purchaseTransaction.getOrderId() // Android does not distinguish original ID
+        #elseif canImport(StoreKit)
+        return String(purchaseTransaction.originalID)
+        #else
+        fatalError("Unsupported platform")
+        #endif
+    }
+
+    /// A developer-facing token for server-side verification.
+    public var purchaseToken: String? {
+        #if SKIP
+        return purchaseTransaction.getPurchaseToken()
+        #elseif canImport(StoreKit)
+        return nil // iOS uses the app receipt or JWS for verification
+        #else
+        fatalError("Unsupported platform")
+        #endif
+    }
 }
 
 extension Marketplace.ReviewRequestDelay {
@@ -652,6 +743,15 @@ public struct ProductInfo {
         product.getTitle()
         #elseif canImport(StoreKit)
         product.displayName
+        #endif
+    }
+
+    /// A description of the product.
+    public var productDescription: String {
+        #if SKIP
+        product.getDescription()
+        #elseif canImport(StoreKit)
+        product.description
         #endif
     }
     
@@ -876,7 +976,47 @@ public struct SubscriptionPricingPhase {
         #endif
     }
 
-    // TODO subscription period, duration
+    /// The billing period as an ISO 8601 duration string (e.g. "P1M" for 1 month, "P1Y" for 1 year).
+    public var billingPeriod: String? {
+        #if SKIP
+        return phase.getBillingPeriod()
+        #elseif canImport(StoreKit)
+        let period = phase.period
+        switch period.unit {
+        case .day: return "P\(period.value)D"
+        case .week: return "P\(period.value)W"
+        case .month: return "P\(period.value)M"
+        case .year: return "P\(period.value)Y"
+        @unknown default: return nil
+        }
+        #endif
+    }
+
+    /// The number of billing cycles in this phase (0 means infinite/until cancelled).
+    public var billingCycleCount: Int {
+        #if SKIP
+        return phase.getBillingCycleCount()
+        #elseif canImport(StoreKit)
+        return phase.periodCount
+        #endif
+    }
+
+    /// The recurrence mode: "FINITE_RECURRING", "INFINITE_RECURRING", or "NON_RECURRING".
+    public var recurrenceMode: String {
+        #if SKIP
+        switch phase.getRecurrenceMode() {
+        case 1: return "INFINITE_RECURRING"
+        case 2: return "FINITE_RECURRING"
+        case 3: return "NON_RECURRING"
+        default: return "UNKNOWN"
+        }
+        #elseif canImport(StoreKit)
+        if phase.type == .introductory {
+            return phase.periodCount > 0 ? "FINITE_RECURRING" : "NON_RECURRING"
+        }
+        return "INFINITE_RECURRING"
+        #endif
+    }
 }
 
 #endif
