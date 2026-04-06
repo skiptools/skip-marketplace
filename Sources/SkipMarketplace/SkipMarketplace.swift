@@ -386,8 +386,11 @@ public struct Marketplace: Sendable {
     public func fetchEntitlements() async throws -> [PurchaseTransaction] {
         var result: [PurchaseTransaction] = []
         #if SKIP
-        async let inAppPurchases = try await queryPurchasesAsync(BillingClient.ProductType.INAPP)
-        async let subsPurchases = try await queryPurchasesAsync(BillingClient.ProductType.SUBS)
+        // Defining local variables to workaround Skip API matching bug causing a spurious warning
+        let inApp: String = BillingClient.ProductType.INAPP
+        let subs: String = BillingClient.ProductType.SUBS
+        async let inAppPurchases = try await queryPurchasesAsync(inApp)
+        async let subsPurchases = try await queryPurchasesAsync(subs)
         
         for purchase in try await inAppPurchases {
             if purchase.getPurchaseState() == Purchase.PurchaseState.PURCHASED {
