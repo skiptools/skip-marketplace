@@ -740,7 +740,7 @@ public struct ProductInfo {
 
     public var displayName: String {
         #if SKIP
-        product.getTitle()
+        product.getName()
         #elseif canImport(StoreKit)
         product.displayName
         #endif
