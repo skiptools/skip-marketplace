@@ -275,6 +275,12 @@ public struct Marketplace: Sendable {
     ///
     /// On iOS, the `offer` parameter must be a win-back offer. Configure a promotional offer by passing it in via the `purchaseOptions` parameter,
     /// leaving the `offer` parameter nil. (iOS applies introductory offers automatically.)
+    ///
+    /// On Android, prefer calling `purchase(item:offer:)` from Swift. The `purchaseOptions` overload is available
+    /// from `#if SKIP` Kotlin code but is excluded from the Swift-Kotlin bridge because the Skip build plugin
+    /// generates an incorrect JNI descriptor for nested Java classes (`BillingFlowParams$Builder` becomes
+    /// `BillingFlowParams/Builder`), causing a nil-unwrap crash at runtime.
+    // SKIP @nobridge
     public func purchase(item: ProductInfo, offer: OfferInfo? = nil, purchaseOptions: PlatformPurchaseOptions? = nil) async throws -> PurchaseTransaction? {
         #if SKIP
         // https://developer.android.com/google/play/billing/integrate#launch
@@ -294,16 +300,21 @@ public struct Marketplace: Sendable {
 
         let billingClient = try await connectBillingClient()
 
-        let purchaseResult: PurchaseResultInfo = try await withCheckedThrowingContinuation { continuation in
-            // hook into the purchasesUpdated() callback above with a continuation that will be invoked when the purchase is completed
-            purchasesUpdatedListeners.append(PurchaseListenerWrapper(once: true) { purchaseResult in
-                logger.info("purchases updated: result=\(purchaseResult.result) purchases=\(purchaseResult.purchases)")
-                continuation.resume(returning: purchaseResult)
-            })
+        // BillingClient 7+ requires launchBillingFlow to be called from the main thread.
+        // The enclosing Async.run{} body runs on Dispatchers.Default, so we switch to
+        // Dispatchers.Main for the entire billing-flow setup and result wait.
+        let purchaseResult: PurchaseResultInfo = withContext(Dispatchers.Main) {
+            try await withCheckedThrowingContinuation { continuation in
+                // hook into the purchasesUpdated() callback above with a continuation that will be invoked when the purchase is completed
+                purchasesUpdatedListeners.append(PurchaseListenerWrapper(once: true) { purchaseResult in
+                    logger.info("purchases updated: result=\(purchaseResult.result) purchases=\(purchaseResult.purchases)")
+                    continuation.resume(returning: purchaseResult)
+                })
 
-            let result = billingClient.launchBillingFlow(activity, billingFlowParams)
-            if result.responseCode != BillingClient.BillingResponseCode.OK {
-                continuation.resume(throwing: ErrorException(RuntimeException(errorMessage(for: result))))
+                let result = billingClient.launchBillingFlow(activity, billingFlowParams)
+                if result.responseCode != BillingClient.BillingResponseCode.OK {
+                    continuation.resume(throwing: ErrorException(RuntimeException(errorMessage(for: result))))
+                }
             }
         }
 
@@ -364,6 +375,25 @@ public struct Marketplace: Sendable {
         #endif
     }
     
+    /// Primary bridge-visible overload of `purchase` without `purchaseOptions`.
+    ///
+    /// This overload exists because the Skip build plugin generates an incorrect JNI descriptor
+    /// for nested Java classes such as `BillingFlowParams$Builder` (writes `BillingFlowParams/Builder`
+    /// instead of `BillingFlowParams$Builder`), causing a nil-unwrap crash when the bridge is loaded.
+    /// By omitting `purchaseOptions` from this overload's signature the generated JNI descriptor only
+    /// references `ProductInfo` and `OfferInfo`, both of which are top-level Skip classes with correct
+    /// descriptors. The full implementation (including optional `purchaseOptions`) is still reachable
+    /// from `#if SKIP` / Kotlin code via the `// SKIP @nobridge` overload above.
+    public func purchase(item: ProductInfo, offer: OfferInfo? = nil) async throws -> PurchaseTransaction? {
+        #if SKIP
+        return try await purchase(item: item, offer: offer, purchaseOptions: nil)
+        #elseif canImport(StoreKit)
+        return try await purchase(item: item, offer: offer, purchaseOptions: nil)
+        #else
+        fatalError("Unsupported platform")
+        #endif
+    }
+
     #if SKIP
     private func queryPurchasesAsync(_ productType: String) async throws -> List<Purchase> {
         let billingClient = try await connectBillingClient()
