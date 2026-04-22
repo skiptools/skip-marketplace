@@ -161,7 +161,7 @@ public struct Marketplace: Sendable {
     }
     private var purchasesUpdatedListeners: [PurchaseListenerWrapper] = []
 
-    private struct PurchaseResultInfo {
+    private struct PurchaseResultInfo: Sendable {
         let result: BillingResult
         let purchases: List<Purchase>?
     }
@@ -556,7 +556,7 @@ public struct Marketplace: Sendable {
 /// [`com.android.billingclient.api.Purchase`](https://developer.android.com/reference/com/android/billingclient/api/Purchase) on Android.
 ///
 /// Note that the underlying `purchaseTransaction: PlatformPurchaseTransaction` property can facilitate accessing platform-specific details.
-public struct PurchaseTransaction {
+public struct PurchaseTransaction: Sendable {
     #if SKIP
     public typealias PlatformPurchaseTransaction = com.android.billingclient.api.Purchase
     #elseif canImport(StoreKit)
@@ -716,7 +716,7 @@ extension Marketplace.ReviewRequestDelay {
 /// [`com.android.billingclient.api.ProductDetails`](https://developer.android.com/reference/com/android/billingclient/api/ProductDetails) on Android.
 ///
 /// Note that the underlying `product: PlatformProduct` property can facilitate accessing platform-specific details.
-public struct ProductInfo {
+public struct ProductInfo: Sendable {
     #if SKIP
     public typealias PlatformProduct = com.android.billingclient.api.ProductDetails
     #elseif canImport(StoreKit)
@@ -818,14 +818,14 @@ public struct ProductInfo {
     }
 }
 
-public protocol OfferInfo {
+public protocol OfferInfo: Sendable {
     var id: String? { get }
     #if SKIP
     var offerToken: String? { get }
     #endif
 }
 
-public struct OneTimePurchaseOfferInfo : OfferInfo {
+public struct OneTimePurchaseOfferInfo: OfferInfo, Sendable {
     #if SKIP
     public typealias PlatformOneTimePurchaseOfferInfo = com.android.billingclient.api.ProductDetails.OneTimePurchaseOfferDetails
     
@@ -906,7 +906,7 @@ public struct OneTimePurchaseOfferInfo : OfferInfo {
 /// [`com.android.billingclient.api.ProductDetails.SubscriptionOfferDetails`](https://developer.android.com/reference/com/android/billingclient/api/ProductDetails.SubscriptionOfferDetails) on Android.
 ///
 /// Note that the underlying `product: PlatformProduct` property can facilitate accessing platform-specific details.
-public struct SubscriptionOfferInfo : OfferInfo {
+public struct SubscriptionOfferInfo: OfferInfo, Sendable {
     #if SKIP
     public typealias PlatformSubscriptionOffer = com.android.billingclient.api.ProductDetails.SubscriptionOfferDetails
     #elseif canImport(StoreKit)
@@ -947,7 +947,7 @@ public struct SubscriptionOfferInfo : OfferInfo {
     #endif
 }
 
-public struct SubscriptionPricingPhase {
+public struct SubscriptionPricingPhase: Sendable {
     #if SKIP
     public typealias PlatformSubscriptionPricingPhase = com.android.billingclient.api.ProductDetails.PricingPhase
     #elseif canImport(StoreKit)
