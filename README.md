@@ -7,7 +7,7 @@ On iOS this wraps Apple's [StoreKit](https://developer.apple.com/documentation/s
 ## Contents
 
 - [Setup](#setup)
-- [Critical: Acknowledging Purchases](#critical-acknowledging-purchases)
+- [Acknowledging Purchases](#acknowledging-purchases)
 - [In-App Purchases](#in-app-purchases)
 - [App Review Requests](#app-review-requests)
 - [App Update Prompts](#app-update-prompts)
@@ -48,14 +48,7 @@ Add the billing permission to your `AndroidManifest.xml`:
 
 The Google Play [Billing Library](https://developer.android.com/google/play/billing/getting-ready#dependency), [In-App Review](https://developer.android.com/guide/playcore/in-app-review), and [In-App Updates](https://developer.android.com/guide/playcore/in-app-updates) Gradle dependencies are added automatically by SkipMarketplace's `skip.yml`.
 
-## Critical: Acknowledging Purchases
-
-> [!IMPORTANT]
-> **Every successful purchase MUST be finished by calling `Marketplace.current.finish(purchaseTransaction:)`. On Android, failing to acknowledge a purchase within **three days** will cause Google Play to **automatically refund the purchase and revoke the entitlement** — even if your app has already granted it to the user.**
->
-> See Google's documentation for the exact rule: [Process purchases — Acknowledge a purchase](https://developer.android.com/google/play/billing/integrate#process):
->
-> > *"If you don't acknowledge a purchase within three days, the user automatically receives a refund, and Google Play revokes the purchase."*
+## Acknowledging Purchases
 
 `finish(purchaseTransaction:)` performs the platform-appropriate acknowledgement:
 
@@ -79,6 +72,11 @@ if let transaction = try await Marketplace.current.purchase(item: product) {
     try await Marketplace.current.finish(purchaseTransaction: transaction)
 }
 ```
+
+> [!IMPORTANT]
+> Every successful purchase **must** be finished by calling `Marketplace.current.finish(purchaseTransaction:)`. On Android, failing to acknowledge a purchase within **three days** will cause Google Play to **automatically refund the purchase and revoke the entitlement** — even if your app has already granted it to the user.
+>
+> See Google's documentation for the exact rule: [Process purchases — Acknowledge a purchase](https://developer.android.com/google/play/billing/integrate#process)
 
 ## In-App Purchases
 
@@ -213,7 +211,7 @@ struct PaywallView: View {
         defer { purchasing = nil }
         do {
             if let transaction = try await Marketplace.current.purchase(item: product) {
-                // Grant entitlement, then acknowledge — see "Critical: Acknowledging Purchases" above
+                // Grant entitlement, then acknowledge — see "Acknowledging Purchases" above
                 try await Marketplace.current.finish(purchaseTransaction: transaction)
             }
         } catch {
@@ -242,7 +240,7 @@ if let transaction = try await Marketplace.current.purchase(item: product) {
     // Grant the entitlement to the user here.
     await unlock(transaction)
 
-    // CRITICAL: Always finish the transaction.
+    // Always finish the transaction.
     // On Android, Google Play will auto-refund within 3 days if this is skipped.
     try await Marketplace.current.finish(purchaseTransaction: transaction)
 } else {
@@ -278,7 +276,7 @@ if let offer = product.subscriptionOffers?.first {
 
 ### Finish (Acknowledge) Transactions
 
-See [Critical: Acknowledging Purchases](#critical-acknowledging-purchases) above for the full rationale. The call is identical on both platforms:
+See [Acknowledging Purchases](#acknowledging-purchases) above for the full rationale. The call is identical on both platforms:
 
 ```swift
 try await Marketplace.current.finish(purchaseTransaction: transaction)
