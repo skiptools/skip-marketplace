@@ -7,7 +7,6 @@ On iOS this wraps Apple's [StoreKit](https://developer.apple.com/documentation/s
 ## Contents
 
 - [Setup](#setup)
-- [Acknowledging Purchases](#acknowledging-purchases)
 - [In-App Purchases](#in-app-purchases)
 - [App Review Requests](#app-review-requests)
 - [App Update Prompts](#app-update-prompts)
@@ -47,36 +46,6 @@ Add the billing permission to your `AndroidManifest.xml`:
 ```
 
 The Google Play [Billing Library](https://developer.android.com/google/play/billing/getting-ready#dependency), [In-App Review](https://developer.android.com/guide/playcore/in-app-review), and [In-App Updates](https://developer.android.com/guide/playcore/in-app-updates) Gradle dependencies are added automatically by SkipMarketplace's `skip.yml`.
-
-## Acknowledging Purchases
-
-`finish(purchaseTransaction:)` performs the platform-appropriate acknowledgement:
-
-| Platform | Underlying Call |
-|---|---|
-| iOS | [`Transaction.finish()`](https://developer.apple.com/documentation/storekit/transaction/finish()) — tells StoreKit that the app has delivered the content. Without this, the transaction stays in the unfinished queue and StoreKit re-delivers it on every launch. |
-| Android | [`BillingClient.acknowledgePurchase()`](https://developer.android.com/reference/com/android/billingclient/api/BillingClient#acknowledgePurchase(com.android.billingclient.api.AcknowledgePurchaseParams,com.android.billingclient.api.AcknowledgePurchaseResponseListener)) — tells Google Play that you've granted the entitlement. **Must be called within 3 days** or the purchase is auto-refunded. |
-
-The recommended flow is therefore:
-
-1. **Receive** the purchase (via `purchase(item:)`, `fetchEntitlements()`, or `getPurchaseTransactionUpdates()`).
-2. **Verify and deliver** the entitlement to the user (e.g., unlock the feature, write to local storage, sync with your server).
-3. **Then** call `finish(purchaseTransaction:)`. Only call this after the entitlement has been successfully granted.
-
-```swift
-if let transaction = try await Marketplace.current.purchase(item: product) {
-    // 1. Grant the entitlement first
-    await grantPremiumFeatures(for: transaction)
-
-    // 2. Then acknowledge — Google will refund within 3 days if this is skipped
-    try await Marketplace.current.finish(purchaseTransaction: transaction)
-}
-```
-
-> [!IMPORTANT]
-> Every successful purchase **must** be finished by calling `Marketplace.current.finish(purchaseTransaction:)`. On Android, failing to acknowledge a purchase within **three days** will cause Google Play to **automatically refund the purchase and revoke the entitlement** — even if your app has already granted it to the user.
->
-> See Google's documentation for the exact rule: [Process purchases — Acknowledge a purchase](https://developer.android.com/google/play/billing/integrate#process)
 
 ## In-App Purchases
 
@@ -276,7 +245,7 @@ if let offer = product.subscriptionOffers?.first {
 
 ### Finish (Acknowledge) Transactions
 
-See [Acknowledging Purchases](#acknowledging-purchases) above for the full rationale. The call is identical on both platforms:
+`finish(purchaseTransaction:)` performs the platform-appropriate acknowledgement:
 
 ```swift
 try await Marketplace.current.finish(purchaseTransaction: transaction)
@@ -288,6 +257,11 @@ try await Marketplace.current.finish(purchaseTransaction: transaction)
 | Android | Calls [`BillingClient.acknowledgePurchase()`](https://developer.android.com/reference/com/android/billingclient/api/BillingClient#acknowledgePurchase(com.android.billingclient.api.AcknowledgePurchaseParams,com.android.billingclient.api.AcknowledgePurchaseResponseListener)) with the purchase's token. **Required within 3 days** — see [Google's documented rule](https://developer.android.com/google/play/billing/integrate#process). |
 
 For **consumable** products on Android (e.g., in-game currency packs), you should call [`BillingClient.consumeAsync()`](https://developer.android.com/reference/com/android/billingclient/api/BillingClient#consumeAsync(com.android.billingclient.api.ConsumeParams,com.android.billingclient.api.ConsumeResponseListener)) instead of `acknowledgePurchase()`. SkipMarketplace's `finish()` always acknowledges, so if you need consumption semantics drop down to the underlying `transaction.purchaseTransaction` (a `com.android.billingclient.api.Purchase`) and call `consumeAsync` directly inside a `#if SKIP` block.
+
+> [!IMPORTANT]
+> Every successful purchase **must** be finished by calling `Marketplace.current.finish(purchaseTransaction:)`. On Android, failing to acknowledge a purchase within **three days** will cause Google Play to **automatically refund the purchase and revoke the entitlement** — even if your app has already granted it to the user.
+>
+> See Google's documentation for the exact rule: [Process purchases — Acknowledge a purchase](https://developer.android.com/google/play/billing/integrate#process)
 
 ### Query Entitlements
 
