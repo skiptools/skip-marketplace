@@ -36,12 +36,6 @@ public struct Marketplace: Sendable {
     /// The current marketplace for the environment
     public static let current = Marketplace()
 
-    #if SKIP
-    public typealias PlatformPurchaseOptions = com.android.billingclient.api.BillingFlowParams.Builder
-    #elseif canImport(StoreKit)
-    public typealias PlatformPurchaseOptions = Set<Product.PurchaseOption>
-    #endif
-
     let logger: Logger = Logger(subsystem: "skip.marketplace", category: "Marketplace") // adb logcat '*:S' 'skip.marketplace.Marketplace:V'
 
     public enum InstallationSource: Sendable, CustomStringConvertible {
@@ -275,7 +269,7 @@ public struct Marketplace: Sendable {
     ///
     /// On iOS, the `offer` parameter must be a win-back offer. Configure a promotional offer by passing it in via the `purchaseOptions` parameter,
     /// leaving the `offer` parameter nil. (iOS applies introductory offers automatically.)
-    public func purchase(item: ProductInfo, offer: OfferInfo? = nil, purchaseOptions: PlatformPurchaseOptions? = nil) async throws -> PurchaseTransaction? {
+    public func purchase(item: ProductInfo, offer: OfferInfo? = nil) async throws -> PurchaseTransaction? {
         #if SKIP
         // https://developer.android.com/google/play/billing/integrate#launch
         let paramsBuilder = BillingFlowParams.ProductDetailsParams.newBuilder()
@@ -284,17 +278,17 @@ public struct Marketplace: Sendable {
             paramsBuilder.setOfferToken(offerToken)
         }
         let params = paramsBuilder.build()
-        let billingFlowParams = (purchaseOptions ?? BillingFlowParams.newBuilder())
+        let billingFlowParams = BillingFlowParams.newBuilder()
             .setProductDetailsParamsList(listOf(params))
             .build()
+
+        let billingClient = try await connectBillingClient()
 
         guard let activity = UIApplication.shared.androidActivity else {
             fatalError("No current UIApplication.shared.androidActivity")
         }
 
-        let billingClient = try await connectBillingClient()
-
-        let purchaseResult: PurchaseResultInfo = try await withCheckedThrowingContinuation { continuation in
+        let purchaseResult: PurchaseResultInfo = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<PurchaseResultInfo, Error>) in
             // hook into the purchasesUpdated() callback above with a continuation that will be invoked when the purchase is completed
             purchasesUpdatedListeners.append(PurchaseListenerWrapper(once: true) { purchaseResult in
                 logger.info("purchases updated: result=\(purchaseResult.result) purchases=\(purchaseResult.purchases)")
@@ -302,6 +296,7 @@ public struct Marketplace: Sendable {
             })
 
             let result = billingClient.launchBillingFlow(activity, billingFlowParams)
+            logger.info("launchBillingFlow response: code=\(result.responseCode) message=\(result.debugMessage)")
             if result.responseCode != BillingClient.BillingResponseCode.OK {
                 continuation.resume(throwing: ErrorException(RuntimeException(errorMessage(for: result))))
             }
@@ -324,7 +319,7 @@ public struct Marketplace: Sendable {
 
         return PurchaseTransaction(purchase)
         #elseif canImport(StoreKit)
-        var opts: Set<Product.PurchaseOption> = purchaseOptions ?? []
+        var opts: Set<Product.PurchaseOption> = []
 
         if let offer {
             guard let offer = offer as? SubscriptionOfferInfo else {
@@ -365,13 +360,13 @@ public struct Marketplace: Sendable {
     }
     
     #if SKIP
-    private func queryPurchasesAsync(_ productType: String) async throws -> List<Purchase> {
+    nonisolated(unsafe) private func queryPurchasesAsync(_ productType: String) async throws -> List<Purchase> {
         let billingClient = try await connectBillingClient()
         let params = QueryPurchasesParams.newBuilder()
             .setProductType(productType)
             .build()
         
-        return try await withCheckedThrowingContinuation { continuation in
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<List<Purchase>, Error>) in
             billingClient.queryPurchasesAsync(params) { billingResult, purchases in
                 if billingResult.responseCode == BillingClient.BillingResponseCode.OK {
                     continuation.resume(returning: purchases)
@@ -383,19 +378,21 @@ public struct Marketplace: Sendable {
     }
     #endif
     
-    public func fetchEntitlements() async throws -> [PurchaseTransaction] {
+    @MainActor public func fetchEntitlements() async throws -> [PurchaseTransaction] {
         var result: [PurchaseTransaction] = []
         #if SKIP
-        async let inAppPurchases = try await queryPurchasesAsync(BillingClient.ProductType.INAPP)
-        async let subsPurchases = try await queryPurchasesAsync(BillingClient.ProductType.SUBS)
-        
-        for purchase in try await inAppPurchases {
+        let inappType: String = BillingClient.ProductType.INAPP
+        let subsType: String = BillingClient.ProductType.SUBS
+        let inAppPurchases: List<Purchase> = try await queryPurchasesAsync(inappType)
+        let subsPurchases: List<Purchase> = try await queryPurchasesAsync(subsType)
+
+        for purchase in inAppPurchases {
             if purchase.getPurchaseState() == Purchase.PurchaseState.PURCHASED {
                 result.append(PurchaseTransaction(purchase))
             }
         }
-        
-        for purchase in try await subsPurchases {
+
+        for purchase in subsPurchases {
             if purchase.getPurchaseState() == Purchase.PurchaseState.PURCHASED {
                 result.append(PurchaseTransaction(purchase))
             }
@@ -443,7 +440,7 @@ public struct Marketplace: Sendable {
     
     public func getPurchaseTransactionUpdates() -> AsyncThrowingStream<PurchaseTransaction, Error> {
         #if SKIP
-        return AsyncThrowingStream { continuation in
+        return AsyncThrowingStream<PurchaseTransaction, Error> { continuation in
             
             let wrapper = PurchaseListenerWrapper { purchaseResult in
                 if purchaseResult.result.responseCode == BillingClient.BillingResponseCode.OK,
@@ -1020,3 +1017,4 @@ public struct SubscriptionPricingPhase {
 }
 
 #endif
+
