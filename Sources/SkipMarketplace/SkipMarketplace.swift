@@ -269,7 +269,12 @@ public struct Marketplace: Sendable {
     ///
     /// On iOS, the `offer` parameter must be a win-back offer. Configure a promotional offer by passing it in via the `purchaseOptions` parameter,
     /// leaving the `offer` parameter nil. (iOS applies introductory offers automatically.)
-    public func purchase(item: ProductInfo, offer: OfferInfo? = nil) async throws -> PurchaseTransaction? {
+    ///
+    /// - Returns: A ``PurchaseResult`` describing the outcome: `.success` with the verified transaction,
+    ///   `.pending` if the purchase is awaiting external action (its final result is delivered later via
+    ///   ``getPurchaseTransactionUpdates()``), `.userCancelled` if the user dismissed the sheet, or
+    ///   `.unverified` (iOS only) if the transaction completed but could not be verified.
+    public func purchase(item: ProductInfo, offer: OfferInfo? = nil) async throws -> PurchaseResult {
         #if SKIP
         // https://developer.android.com/google/play/billing/integrate#launch
         let paramsBuilder = BillingFlowParams.ProductDetailsParams.newBuilder()
@@ -305,19 +310,36 @@ public struct Marketplace: Sendable {
         if purchaseResult.result.responseCode != BillingClient.BillingResponseCode.OK {
             switch purchaseResult.result.responseCode {
             case BillingClient.BillingResponseCode.USER_CANCELED:
-                logger.info("purchase of item \(item.id) pending")
-                return nil // TODO: better signalling of user cancelled
+                logger.info("purchase of item \(item.id) cancelled by user")
+                return .userCancelled
             default:
                 throw ErrorException(RuntimeException(errorMessage(for: purchaseResult.result)))
             }
         }
 
-        logger.info("purchase of item \(item.id) successful")
+        // A successful billing flow (responseCode == OK) does NOT guarantee a completed purchase:
+        // when pending purchases are enabled (they are — see enablePendingPurchases above), the purchase
+        // may arrive in the PENDING state (e.g. awaiting parental approval or a cash/voucher payment).
+        // Inspect the purchase state before treating it as completed.
+        // https://developer.android.com/google/play/billing/integrate#pending
         guard let purchase = purchaseResult.purchases?.first() else {
-            throw ErrorException(RuntimeException("Successful purchase returned no purchases"))
+            // OK with no purchases is unexpected; treat as pending rather than fabricating a success.
+            logger.info("purchase of item \(item.id) returned OK with no purchases")
+            return .pending
         }
 
-        return PurchaseTransaction(purchase)
+        let purchaseState = purchase.getPurchaseState()
+        if purchaseState == Purchase.PurchaseState.PURCHASED {
+            logger.info("purchase of item \(item.id) successful")
+            return .success(PurchaseTransaction(purchase))
+        } else if purchaseState == Purchase.PurchaseState.PENDING {
+            logger.info("purchase of item \(item.id) pending")
+            return .pending
+        } else {
+            // UNSPECIFIED_STATE: the final result will be delivered via getPurchaseTransactionUpdates()
+            logger.info("purchase of item \(item.id) in unspecified state")
+            return .pending
+        }
         #elseif canImport(StoreKit)
         var opts: Set<Product.PurchaseOption> = []
 
@@ -338,21 +360,27 @@ public struct Marketplace: Sendable {
         switch result {
         case .userCancelled:
             logger.info("purchase of item \(item.id) cancelled by user")
-            return nil // TODO: better signalling of cancellation versus pending
+            return .userCancelled
         case .pending:
             logger.info("purchase of item \(item.id) pending")
-            return nil
+            return .pending
         case .success(let verificationResult):
-            logger.info("purchase of item \(item.id) successful: \(verificationResult.debugDescription)")
             switch verificationResult {
-            case .unverified(_, let error):
-                throw error // fail when the transaction was not verified
+            case .unverified(let transaction, let error):
+                // The transaction completed but StoreKit could not verify its signature.
+                // Surface it (with the error) rather than throwing, so the caller can decide
+                // whether to trust it. Android has no client-side equivalent of this case.
+                logger.info("purchase of item \(item.id) unverified: \(String(describing: error))")
+                return .unverified(PurchaseTransaction(transaction), error)
             case .verified(let transaction):
-                return PurchaseTransaction(transaction)
+                logger.info("purchase of item \(item.id) successful: \(verificationResult.debugDescription)")
+                return .success(PurchaseTransaction(transaction))
             }
         @unknown default:
+            // A future StoreKit result we don't model yet; treat as pending so the caller waits for
+            // getPurchaseTransactionUpdates() rather than assuming success.
             logger.info("purchase of item \(item.id) unknown result: \(String(describing: result))")
-            return nil
+            return .pending
         }
         #else
         fatalError("Unsupported platform")
@@ -545,6 +573,31 @@ public struct Marketplace: Sendable {
             shouldCheckReview()
         }
     }
+}
+
+/// The outcome of a call to ``Marketplace/purchase(item:offer:)``.
+///
+/// This replaces the previous ambiguous `PurchaseTransaction?` return value, which collapsed
+/// user-cancellation and pending purchases into a single `nil`.
+public enum PurchaseResult: Sendable {
+    /// The purchase completed and the transaction was verified. Grant the entitlement and then
+    /// call ``Marketplace/finish(purchaseTransaction:)``.
+    case success(PurchaseTransaction)
+
+    /// The purchase is awaiting an external action and has not completed yet — for example
+    /// Ask-to-Buy parental approval or SCA bank approval on iOS, or a cash/voucher payment
+    /// (or parental approval) on Android. The final outcome is delivered later via
+    /// ``Marketplace/getPurchaseTransactionUpdates()``. Do not grant the entitlement yet.
+    case pending
+
+    /// The user dismissed or cancelled the purchase sheet.
+    case userCancelled
+
+    /// (iOS only) The purchase completed but StoreKit could not verify the transaction's JWS
+    /// signature. The unverified transaction and the verification error are provided so the caller
+    /// can decide whether to trust it. This case is never produced on Android, where verification is
+    /// performed server-side using ``PurchaseTransaction/purchaseToken``.
+    case unverified(PurchaseTransaction, Error)
 }
 
 /// A wrapper around a market-specific purchase result, such as
