@@ -48,6 +48,23 @@ final class SkipMarketplaceTests: XCTestCase {
         XCTAssertNotNil(marketplace)
     }
 
+    func testPurchaseResultCases() throws {
+        // The cases that carry no platform-specific transaction can be constructed directly and must
+        // remain distinct (the whole point of A1 is that cancel and pending are no longer both `nil`).
+        func describe(_ result: PurchaseResult) -> String {
+            switch result {
+            case .success: return "success"
+            case .pending: return "pending"
+            case .userCancelled: return "userCancelled"
+            case .unverified: return "unverified"
+            }
+        }
+
+        XCTAssertEqual(describe(.userCancelled), "userCancelled")
+        XCTAssertEqual(describe(.pending), "pending")
+        XCTAssertNotEqual(describe(.userCancelled), describe(.pending))
+    }
+
     func testReviewRequestDelay() throws {
         // Test custom delay
         var called = false

@@ -178,9 +178,12 @@ struct PaywallView: View {
         purchasing = product.id
         defer { purchasing = nil }
         do {
-            if let transaction = try await Marketplace.current.purchase(item: product) {
+            switch try await Marketplace.current.purchase(item: product) {
+            case .success(let transaction):
                 // Grant entitlement, then acknowledge — see "Acknowledging Purchases" above
                 try await Marketplace.current.finish(purchaseTransaction: transaction)
+            case .pending, .userCancelled, .unverified:
+                break
             }
         } catch {
             self.error = "Purchase failed: \(error.localizedDescription)"
@@ -191,7 +194,7 @@ struct PaywallView: View {
 
 ### Purchase a Product
 
-Initiate a purchase. Returns the resulting [`PurchaseTransaction`](#purchasetransaction), or `nil` if the user cancelled or the purchase is pending. Wraps [`Product.purchase(options:)`](https://developer.apple.com/documentation/storekit/product/purchase(options:)) on iOS and [`BillingClient.launchBillingFlow()`](https://developer.android.com/reference/com/android/billingclient/api/BillingClient#launchBillingFlow(android.app.Activity,com.android.billingclient.api.BillingFlowParams)) on Android.
+Initiate a purchase. Returns a [`PurchaseResult`](#purchaseresult) describing the outcome — distinguishing a completed purchase from a user cancellation, a pending purchase, and (on iOS) an unverified transaction. Wraps [`Product.purchase(options:)`](https://developer.apple.com/documentation/storekit/product/purchase(options:)) on iOS and [`BillingClient.launchBillingFlow()`](https://developer.android.com/reference/com/android/billingclient/api/BillingClient#launchBillingFlow(android.app.Activity,com.android.billingclient.api.BillingFlowParams)) on Android.
 
 ```swift
 let product = try await Marketplace.current.fetchProducts(
@@ -199,7 +202,8 @@ let product = try await Marketplace.current.fetchProducts(
     subscription: false
 ).first!
 
-if let transaction = try await Marketplace.current.purchase(item: product) {
+switch try await Marketplace.current.purchase(item: product) {
+case .success(let transaction):
     print("Purchased: \(transaction.products)")
     print("Order ID: \(transaction.id ?? "unknown")")
     print("Date: \(transaction.purchaseDate)")
@@ -211,11 +215,27 @@ if let transaction = try await Marketplace.current.purchase(item: product) {
     // Always finish the transaction.
     // On Android, Google Play will auto-refund within 3 days if this is skipped.
     try await Marketplace.current.finish(purchaseTransaction: transaction)
-} else {
-    // nil = user cancelled, or the purchase is in a pending state (e.g. parental approval).
-    // Listen via getPurchaseTransactionUpdates() to be notified when a pending purchase resolves.
+
+case .pending:
+    // The purchase is awaiting external action (e.g. parental approval, SCA, or a cash/voucher
+    // payment). Do NOT grant the entitlement yet — listen via getPurchaseTransactionUpdates() to
+    // be notified when the pending purchase resolves to a completed transaction.
+    break
+
+case .userCancelled:
+    // The user dismissed the purchase sheet.
+    break
+
+case .unverified(let transaction, let error):
+    // iOS only: the purchase completed but StoreKit could not verify the transaction signature.
+    // Decide whether to trust it (e.g. after your own server-side verification) before unlocking.
+    print("Unverified transaction \(transaction.id ?? "unknown"): \(error)")
+    break
 }
 ```
+
+> [!NOTE]
+> Earlier versions returned an optional `PurchaseTransaction?` that mapped both cancellation and pending purchases to `nil`. `purchase(item:offer:)` now returns a `PurchaseResult` so these outcomes are distinguishable — in particular, a pending Android purchase is no longer reported as a completed one.
 
 ### Purchase with an Offer
 
@@ -229,7 +249,7 @@ let product = try await Marketplace.current.fetchProducts(
 
 // Pick the first subscription offer; in production, choose based on offer.id and pricingPhases
 if let offer = product.subscriptionOffers?.first {
-    if let transaction = try await Marketplace.current.purchase(
+    if case .success(let transaction) = try await Marketplace.current.purchase(
         item: product,
         offer: offer
     ) {
@@ -330,7 +350,7 @@ struct MyApp: App {
 ```
 
 > [!IMPORTANT]
-> This is the primary path for handling **pending purchases** on Android (parent approval, slow card processing, cash payments). A pending purchase causes `purchase(item:)` to return `nil`; when it eventually resolves to `PURCHASED`, the result is delivered through `getPurchaseTransactionUpdates()` — **not** as a return value from the original `purchase()` call. See [Handle pending transactions](https://developer.android.com/google/play/billing/integrate#pending).
+> This is the primary path for handling **pending purchases** on Android (parent approval, slow card processing, cash payments). A pending purchase causes `purchase(item:)` to return `.pending`; when it eventually resolves to `PURCHASED`, the result is delivered through `getPurchaseTransactionUpdates()` — **not** as a return value from the original `purchase()` call. See [Handle pending transactions](https://developer.android.com/google/play/billing/integrate#pending).
 
 ### Testing Purchases
 
@@ -446,7 +466,7 @@ The main entry point, accessed via `Marketplace.current`.
 | `current` | The singleton marketplace instance |
 | `installationSource` | Where the app was installed from (`async`) |
 | `fetchProducts(for:subscription:)` | Fetch product details by ID. Wraps [`Product.products(for:)`](https://developer.apple.com/documentation/storekit/product/products(for:)) / [`BillingClient.queryProductDetails`](https://developer.android.com/reference/com/android/billingclient/api/BillingClient#queryProductDetails(com.android.billingclient.api.QueryProductDetailsParams,com.android.billingclient.api.ProductDetailsResponseListener)) |
-| `purchase(item:offer:)` | Initiate a purchase. Wraps [`Product.purchase(options:)`](https://developer.apple.com/documentation/storekit/product/purchase(options:)) / [`BillingClient.launchBillingFlow`](https://developer.android.com/reference/com/android/billingclient/api/BillingClient#launchBillingFlow(android.app.Activity,com.android.billingclient.api.BillingFlowParams)) |
+| `purchase(item:offer:)` | Initiate a purchase, returning a [`PurchaseResult`](#purchaseresult). Wraps [`Product.purchase(options:)`](https://developer.apple.com/documentation/storekit/product/purchase(options:)) / [`BillingClient.launchBillingFlow`](https://developer.android.com/reference/com/android/billingclient/api/BillingClient#launchBillingFlow(android.app.Activity,com.android.billingclient.api.BillingFlowParams)) |
 | `fetchEntitlements()` | Get all current entitlements. Wraps [`Transaction.currentEntitlements`](https://developer.apple.com/documentation/storekit/transaction/currententitlements) / [`BillingClient.queryPurchasesAsync`](https://developer.android.com/reference/com/android/billingclient/api/BillingClient#queryPurchasesAsync(com.android.billingclient.api.QueryPurchasesParams,com.android.billingclient.api.PurchasesResponseListener)) |
 | `finish(purchaseTransaction:)` | **Acknowledge/finish a transaction.** Wraps [`Transaction.finish()`](https://developer.apple.com/documentation/storekit/transaction/finish()) / [`BillingClient.acknowledgePurchase`](https://developer.android.com/reference/com/android/billingclient/api/BillingClient#acknowledgePurchase(com.android.billingclient.api.AcknowledgePurchaseParams,com.android.billingclient.api.AcknowledgePurchaseResponseListener)). Must be called within 3 days on Android — [see why](https://developer.android.com/google/play/billing/integrate#process). |
 | `getPurchaseTransactionUpdates()` | `AsyncThrowingStream` of transaction updates. Wraps [`Transaction.updates`](https://developer.apple.com/documentation/storekit/transaction/updates) / [`PurchasesUpdatedListener`](https://developer.android.com/reference/com/android/billingclient/api/PurchasesUpdatedListener) |
@@ -471,6 +491,17 @@ Wraps [`StoreKit.Product`](https://developer.apple.com/documentation/storekit/pr
 | `isSubscription: Bool` | Whether this is a subscription product |
 | `oneTimePurchaseOfferInfo: [OneTimePurchaseOfferInfo]?` | One-time purchase offers (nil for subscriptions) |
 | `subscriptionOffers: [SubscriptionOfferInfo]?` | Subscription offers (nil for one-time purchases) |
+
+### PurchaseResult
+
+The outcome of `purchase(item:offer:)`.
+
+| Case | Description |
+|---|---|
+| `.success(PurchaseTransaction)` | The purchase completed and the transaction was verified. Grant the entitlement, then call `finish(purchaseTransaction:)`. |
+| `.pending` | The purchase is awaiting external action (Ask to Buy / SCA approval, or a cash/voucher payment on Android). The final result arrives via `getPurchaseTransactionUpdates()` — do not grant the entitlement yet. Maps to [`Product.PurchaseResult.pending`](https://developer.apple.com/documentation/storekit/product/purchaseresult) on iOS and [`Purchase.PurchaseState.PENDING`](https://developer.android.com/reference/com/android/billingclient/api/Purchase.PurchaseState) on Android. |
+| `.userCancelled` | The user dismissed the purchase sheet. |
+| `.unverified(PurchaseTransaction, Error)` | **iOS only.** The purchase completed but StoreKit could not verify the transaction's JWS signature; decide whether to trust it. Never produced on Android, where verification is done server-side via `purchaseToken`. |
 
 ### PurchaseTransaction
 
