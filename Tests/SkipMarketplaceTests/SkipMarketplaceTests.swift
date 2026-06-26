@@ -65,6 +65,22 @@ final class SkipMarketplaceTests: XCTestCase {
         XCTAssertNotEqual(describe(.userCancelled), describe(.pending))
     }
 
+    func testMarketplaceError() throws {
+        // The associated-value case carries its payload through (Kotlin sealed-class data subclass).
+        let err: MarketplaceError = .storeError(code: 7, reason: "ITEM_ALREADY_OWNED")
+        guard case .storeError(let code, let reason) = err else {
+            XCTFail("expected .storeError")
+            return
+        }
+        XCTAssertEqual(code, 7)
+        XCTAssertEqual(reason, "ITEM_ALREADY_OWNED")
+
+        // A human-readable description is available on both platforms (CustomStringConvertible).
+        XCTAssertEqual(MarketplaceError.storeError(code: 7, reason: "X").description, "Store error 7: X")
+        XCTAssertFalse(MarketplaceError.unsupportedPlatform.description.isEmpty)
+        XCTAssertFalse(MarketplaceError.noActiveActivity.description.isEmpty)
+    }
+
     func testReviewRequestDelay() throws {
         // Test custom delay
         var called = false
