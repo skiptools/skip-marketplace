@@ -503,6 +503,24 @@ The outcome of `purchase(item:offer:)`.
 | `.userCancelled` | The user dismissed the purchase sheet. |
 | `.unverified(PurchaseTransaction, Error)` | **iOS only.** The purchase completed but StoreKit could not verify the transaction's JWS signature; decide whether to trust it. Never produced on Android, where verification is done server-side via `purchaseToken`. |
 
+### MarketplaceError
+
+`Marketplace` operations throw a typed `MarketplaceError` rather than crashing (`fatalError`) or throwing an untyped exception. On Android, Play Billing [response codes](https://developer.android.com/reference/com/android/billingclient/api/BillingClient.BillingResponseCode) are mapped to these cases (unmapped codes surface as `.storeError`); on iOS, StoreKit throws its own errors directly. User cancellation and pending purchases are **not** errors — they are reported via [`PurchaseResult`](#purchaseresult).
+
+| Case | Description |
+|---|---|
+| `.billingUnavailable` | Billing is unavailable on this device or for the current account (`BILLING_UNAVAILABLE`). |
+| `.serviceDisconnected` | The billing service is disconnected; the operation can usually be retried. |
+| `.productUnavailable` | The requested product is not available (`ITEM_UNAVAILABLE`). |
+| `.itemAlreadyOwned` | The item is already owned and cannot be purchased again (`ITEM_ALREADY_OWNED`). |
+| `.networkError` | A network error occurred (`NETWORK_ERROR` / `SERVICE_TIMEOUT`). |
+| `.noActiveActivity` | No Android `Activity` is available to present the purchase flow. |
+| `.unsupportedOffer` | The supplied offer is not supported by `purchase(item:offer:)` — e.g. an iOS promotional offer (sign it server-side and apply via purchase options) or a non-subscription offer. |
+| `.unsupportedPlatform` | The operation is not supported on the current platform. |
+| `.storeError(code:reason:)` | An otherwise-unmapped store error carrying the platform response `code` and a diagnostic `reason`. |
+
+`MarketplaceError` conforms to `CustomStringConvertible` (and `LocalizedError` on iOS), so `"\(error)"` and `error.localizedDescription` both yield a readable message.
+
 ### PurchaseTransaction
 
 Wraps [`StoreKit.Transaction`](https://developer.apple.com/documentation/storekit/transaction) on iOS / [`com.android.billingclient.api.Purchase`](https://developer.android.com/reference/com/android/billingclient/api/Purchase) on Android. Access the underlying platform object via `transaction.purchaseTransaction` for platform-specific details.

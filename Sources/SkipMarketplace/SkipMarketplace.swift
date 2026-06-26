@@ -192,7 +192,7 @@ public struct Marketplace: Sendable {
                 if billingResult.responseCode == BillingClient.BillingResponseCode.OK {
                     continuation.resume(returning: ())
                 } else {
-                    continuation.resume(throwing: ErrorException(RuntimeException(errorMessage(for: billingResult))))
+                    continuation.resume(throwing: marketplaceError(for: billingResult))
                 }
             }
 
@@ -235,6 +235,21 @@ public struct Marketplace: Sendable {
         default: return "Unknown error"
         }
     }
+
+    /// Maps a Play Billing `BillingResult` response code to a typed ``MarketplaceError``.
+    /// https://developer.android.com/reference/com/android/billingclient/api/BillingClient.BillingResponseCode
+    private func marketplaceError(for billingResult: BillingResult) -> MarketplaceError {
+        switch billingResult.responseCode {
+        case BillingClient.BillingResponseCode.BILLING_UNAVAILABLE: return .billingUnavailable
+        case BillingClient.BillingResponseCode.SERVICE_DISCONNECTED: return .serviceDisconnected
+        case BillingClient.BillingResponseCode.SERVICE_UNAVAILABLE: return .serviceDisconnected
+        case BillingClient.BillingResponseCode.SERVICE_TIMEOUT: return .networkError
+        case BillingClient.BillingResponseCode.NETWORK_ERROR: return .networkError
+        case BillingClient.BillingResponseCode.ITEM_UNAVAILABLE: return .productUnavailable
+        case BillingClient.BillingResponseCode.ITEM_ALREADY_OWNED: return .itemAlreadyOwned
+        default: return .storeError(code: billingResult.responseCode, reason: errorMessage(for: billingResult))
+        }
+    }
     #endif
 
     public func fetchProducts(for identifiers: [String], subscription: Bool) async throws -> [ProductInfo] {
@@ -261,7 +276,7 @@ public struct Marketplace: Sendable {
         #elseif canImport(StoreKit)
         return try await Product.products(for: identifiers).map({ ProductInfo(product: $0) })
         #else
-        fatalError("Unsupported platform")
+        throw MarketplaceError.unsupportedPlatform
         #endif
     }
 
@@ -290,7 +305,7 @@ public struct Marketplace: Sendable {
         let billingClient = try await connectBillingClient()
 
         guard let activity = UIApplication.shared.androidActivity else {
-            fatalError("No current UIApplication.shared.androidActivity")
+            throw MarketplaceError.noActiveActivity
         }
 
         let purchaseResult: PurchaseResultInfo = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<PurchaseResultInfo, Error>) in
@@ -303,7 +318,7 @@ public struct Marketplace: Sendable {
             let result = billingClient.launchBillingFlow(activity, billingFlowParams)
             logger.info("launchBillingFlow response: code=\(result.responseCode) message=\(result.debugMessage)")
             if result.responseCode != BillingClient.BillingResponseCode.OK {
-                continuation.resume(throwing: ErrorException(RuntimeException(errorMessage(for: result))))
+                continuation.resume(throwing: marketplaceError(for: result))
             }
         }
 
@@ -313,7 +328,7 @@ public struct Marketplace: Sendable {
                 logger.info("purchase of item \(item.id) cancelled by user")
                 return .userCancelled
             default:
-                throw ErrorException(RuntimeException(errorMessage(for: purchaseResult.result)))
+                throw marketplaceError(for: purchaseResult.result)
             }
         }
 
@@ -345,14 +360,18 @@ public struct Marketplace: Sendable {
 
         if let offer {
             guard let offer = offer as? SubscriptionOfferInfo else {
-                fatalError("Unsupported offer type")
+                throw MarketplaceError.unsupportedOffer
             }
             if offer.type == .promotional {
-                fatalError("You can't pass a promotional offer to the purchase() method, because you have to sign them with your server-side app. Use the purchaseOptions parameter instead.")
+                // Promotional offers must be signed server-side and applied via signed purchase options,
+                // not passed through the `offer` parameter. See the README "Purchase with an Offer" section.
+                logger.error("promotional offers cannot be passed via the offer parameter; sign them server-side and apply via purchase options")
+                throw MarketplaceError.unsupportedOffer
             } else if #available(iOS 18.0, macOS 15.0, *), offer.type == .winBack {
                 opts.insert(.winBackOffer(offer.offer))
             } else {
-                fatalError("Unsupported offer type: \(offer.type)")
+                logger.error("unsupported offer type: \(String(describing: offer.type))")
+                throw MarketplaceError.unsupportedOffer
             }
         }
         let result: Product.PurchaseResult = try await item.product.purchase(options: opts)
@@ -383,7 +402,7 @@ public struct Marketplace: Sendable {
             return .pending
         }
         #else
-        fatalError("Unsupported platform")
+        throw MarketplaceError.unsupportedPlatform
         #endif
     }
     
@@ -399,7 +418,7 @@ public struct Marketplace: Sendable {
                 if billingResult.responseCode == BillingClient.BillingResponseCode.OK {
                     continuation.resume(returning: purchases)
                 } else {
-                    continuation.resume(throwing: ErrorException(RuntimeException(errorMessage(for: billingResult))))
+                    continuation.resume(throwing: marketplaceError(for: billingResult))
                 }
             }
         }
@@ -438,10 +457,10 @@ public struct Marketplace: Sendable {
         }
         return result
         #else
-        fatalError("Unsupported platform")
+        throw MarketplaceError.unsupportedPlatform
         #endif
     }
-    
+
     /// A purchase transaction must be finished or else it will be in a pending state, or may be automatically refunded.
     ///
     /// See: https://developer.apple.com/documentation/storekit/transaction/finish()
@@ -455,14 +474,14 @@ public struct Marketplace: Sendable {
                 if billingResult.responseCode == BillingClient.BillingResponseCode.OK {
                     continuation.resume(returning: ())
                 } else {
-                    continuation.resume(throwing: ErrorException(RuntimeException(errorMessage(for: billingResult))))
+                    continuation.resume(throwing: marketplaceError(for: billingResult))
                 }
             }
         }
         #elseif canImport(StoreKit)
         await purchaseTransaction.purchaseTransaction.finish()
         #else
-        fatalError("Unsupported platform")
+        throw MarketplaceError.unsupportedPlatform
         #endif
     }
     
@@ -508,7 +527,9 @@ public struct Marketplace: Sendable {
             }
         }
         #else
-        fatalError("Unsupported platform")
+        return AsyncThrowingStream { continuation in
+            continuation.finish(throwing: MarketplaceError.unsupportedPlatform)
+        }
         #endif
     }
 
@@ -574,6 +595,60 @@ public struct Marketplace: Sendable {
         }
     }
 }
+
+/// A typed error thrown by ``Marketplace`` operations.
+///
+/// On Android, Play Billing failures (``com.android.billingclient.api.BillingResult`` response codes) are
+/// mapped to these cases; any unmapped code surfaces as ``storeError(code:message:)``. On iOS, StoreKit throws
+/// its own errors directly, so these cases primarily cover API-misuse and platform conditions.
+///
+/// Note: user cancellation and pending purchases are *not* errors — ``Marketplace/purchase(item:offer:)``
+/// reports those via ``PurchaseResult/userCancelled`` and ``PurchaseResult/pending`` instead of throwing.
+public enum MarketplaceError: Error, Sendable {
+    /// Billing is unavailable on this device or for the current account (e.g. the Play Store is not signed in).
+    case billingUnavailable
+    /// The billing service is disconnected; the operation can usually be retried.
+    case serviceDisconnected
+    /// The requested product is not available in the store.
+    case productUnavailable
+    /// The item is already owned and cannot be purchased again.
+    case itemAlreadyOwned
+    /// A network error occurred while communicating with the store.
+    case networkError
+    /// No active Android `Activity` is available to present the purchase flow.
+    case noActiveActivity
+    /// The supplied ``OfferInfo`` is not supported by ``Marketplace/purchase(item:offer:)`` — for example an
+    /// iOS promotional offer (which must be signed server-side and applied via purchase options) or a
+    /// non-subscription offer.
+    case unsupportedOffer
+    /// The operation is not supported on the current platform.
+    case unsupportedPlatform
+    /// An otherwise-unmapped store error, carrying the platform response `code` and a diagnostic `reason`.
+    /// (The label is `reason` rather than `message` to avoid colliding with `Throwable.message` on Android.)
+    case storeError(code: Int, reason: String)
+}
+
+extension MarketplaceError: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .billingUnavailable: return "Billing is unavailable on this device or for this account."
+        case .serviceDisconnected: return "The billing service is disconnected. Please try again."
+        case .productUnavailable: return "The requested product is unavailable."
+        case .itemAlreadyOwned: return "This item is already owned."
+        case .networkError: return "A network error occurred. Please check your connection and try again."
+        case .noActiveActivity: return "No active Android activity is available to present the purchase flow."
+        case .unsupportedOffer: return "The provided offer is not supported by purchase(item:offer:)."
+        case .unsupportedPlatform: return "This operation is not supported on the current platform."
+        case .storeError(let code, let reason): return "Store error \(code): \(reason)"
+        }
+    }
+}
+
+#if !SKIP
+extension MarketplaceError: LocalizedError {
+    public var errorDescription: String? { description }
+}
+#endif
 
 /// The outcome of a call to ``Marketplace/purchase(item:offer:)``.
 ///
