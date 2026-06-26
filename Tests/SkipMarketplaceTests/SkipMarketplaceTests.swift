@@ -46,6 +46,9 @@ final class SkipMarketplaceTests: XCTestCase {
     func testMarketplaceSingleton() throws {
         let marketplace = Marketplace.current
         XCTAssertNotNil(marketplace)
+        // Marketplace is a reference type, so `current` must always return the same shared instance —
+        // the billing state it guards (billing client, listener registry) is shared and lock-protected.
+        XCTAssertTrue(marketplace === Marketplace.current)
     }
 
     func testPurchaseResultCases() throws {

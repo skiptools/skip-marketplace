@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #if !SKIP_BRIDGE
 import SwiftUI
+import Foundation
 import OSLog
 #if SKIP
 import com.google.android.play.core.review.ReviewManagerFactory
@@ -32,11 +33,14 @@ import MarketplaceKit
 /// An interface to the platform's app marketplace, such as the Apple App Store or the Google Play Store.
 ///
 /// Mostly conforms to the [OpenIAP](https://www.openiap.dev) specification.
-public struct Marketplace: Sendable {
+public final class Marketplace: @unchecked Sendable {
     /// The current marketplace for the environment
     public static let current = Marketplace()
 
     let logger: Logger = Logger(subsystem: "skip.marketplace", category: "Marketplace") // adb logcat '*:S' 'skip.marketplace.Marketplace:V'
+
+    private init() {
+    }
 
     public enum InstallationSource: Sendable, CustomStringConvertible {
         // MARK: Android app sources
@@ -143,8 +147,15 @@ public struct Marketplace: Sendable {
 
 
     #if SKIP
+    /// Guards all access to the mutable billing state (`activeBillingClient`, `connectTask`,
+    /// `purchasesUpdatedListeners`), which is touched both from Swift concurrency tasks and from Play
+    /// Billing callbacks delivered on arbitrary threads.
+    private let billingLock = NSLock()
     private var activeBillingClient: BillingClient? = nil
-    
+    /// The in-flight connection attempt, used to coalesce concurrent `connectBillingClient()` calls so that
+    /// we never build more than one `BillingClient` at a time.
+    private var connectTask: Task<BillingClient, Error>? = nil
+
     private class PurchaseListenerWrapper {
         let listener: (PurchaseResultInfo) -> ()
         let once: Bool
@@ -160,26 +171,92 @@ public struct Marketplace: Sendable {
         let purchases: List<Purchase>?
     }
 
-    private func connectBillingClient() async throws -> BillingClient {
+    private func addPurchaseListener(_ wrapper: PurchaseListenerWrapper) {
+        billingLock.lock()
+        defer { billingLock.unlock() }
+        purchasesUpdatedListeners.append(wrapper)
+    }
+
+    private func removePurchaseListener(_ wrapper: PurchaseListenerWrapper) {
+        billingLock.lock()
+        defer { billingLock.unlock() }
+        purchasesUpdatedListeners.removeAll(where: { $0 === wrapper })
+    }
+
+    /// Invoked from the Play Billing `PurchasesUpdatedListener` on an arbitrary thread. Snapshots the
+    /// listeners (removing one-shot listeners) under the lock, then notifies them outside the lock so a
+    /// listener callback (which resumes a continuation) cannot re-enter or deadlock against the lock.
+    private func purchasesUpdated(billingResult: BillingResult, purchases: List<Purchase>?) {
+        let purchaseResultInfo = PurchaseResultInfo(billingResult, purchases)
+        for wrapper in snapshotListenersRemovingOnce() {
+            wrapper.listener(purchaseResultInfo)
+        }
+    }
+
+    /// Returns a snapshot of the current listeners and removes the one-shot (`once`) listeners, under the lock.
+    private func snapshotListenersRemovingOnce() -> [PurchaseListenerWrapper] {
+        billingLock.lock()
+        defer { billingLock.unlock() }
+        let snapshot = purchasesUpdatedListeners
+        purchasesUpdatedListeners.removeAll(where: { $0.once })
+        return snapshot
+    }
+
+    /// The locked decision about how to obtain a connected `BillingClient`.
+    private enum ConnectionState {
+        case ready(BillingClient)
+        case connecting(Task<BillingClient, Error>)
+    }
+
+    /// Atomically inspects the billing state under a single lock and returns either the ready cached client
+    /// or the connection task to await — creating and caching a new task if none is already in flight.
+    private func beginConnection() -> ConnectionState {
+        billingLock.lock()
+        defer { billingLock.unlock() }
         // return the cached client if it is ready
         if let activeBillingClient = self.activeBillingClient, activeBillingClient.isReady() {
-            return activeBillingClient
+            return .ready(activeBillingClient)
         }
+        // reuse the in-flight connection if there is one, rather than starting another
+        if let task = self.connectTask {
+            return .connecting(task)
+        }
+        let task = Task<BillingClient, Error> {
+            try await self.openBillingConnection()
+        }
+        self.connectTask = task
+        return .connecting(task)
+    }
 
-        // otherwise create a new billing client
-        // https://developer.android.com/google/play/billing/integrate#connect_to_google_play
-
-        func purchasesUpdated(billingResult: BillingResult, purchases: List<Purchase>?) {
-            let purchaseResultInfo = PurchaseResultInfo(billingResult, purchases)
-            for wrapper in purchasesUpdatedListeners {
-                wrapper.listener(purchaseResultInfo)
+    private func connectBillingClient() async throws -> BillingClient {
+        switch beginConnection() {
+        case .ready(let billingClient):
+            return billingClient
+        case .connecting(let task):
+            // await the connection outside the lock, then cache the result (or clear on failure)
+            do {
+                let billingClient = try await task.value
+                billingLock.lock()
+                defer { billingLock.unlock() }
+                self.activeBillingClient = billingClient
+                self.connectTask = nil
+                return billingClient
+            } catch {
+                billingLock.lock()
+                defer { billingLock.unlock() }
+                self.connectTask = nil
+                throw error
             }
-            purchasesUpdatedListeners.removeAll(where: { $0.once })
         }
+    }
 
+    /// Builds and connects a new `BillingClient`. Always call through `connectBillingClient()` so the
+    /// connection is coalesced and the resulting client cached.
+    /// https://developer.android.com/google/play/billing/integrate#connect_to_google_play
+    private func openBillingConnection() async throws -> BillingClient {
         let billingClient = BillingClient.newBuilder(ProcessInfo.processInfo.androidContext)
             .setListener({ billingResult, purchases in
-                purchasesUpdated(billingResult, purchases)
+                self.purchasesUpdated(billingResult, purchases)
             })
             // TODO: configure other settings
             .enablePendingPurchases(PendingPurchasesParams.newBuilder().enableOneTimeProducts().build())
@@ -198,6 +275,8 @@ public struct Marketplace: Sendable {
 
             func billingServiceDisconnected() {
                 // the billing client disconnected, so drop the cached reference
+                billingLock.lock()
+                defer { billingLock.unlock() }
                 self.activeBillingClient = nil
             }
 
@@ -212,8 +291,6 @@ public struct Marketplace: Sendable {
             billingClient.startConnection(billingClientListener)
         }
 
-        // cache the billing client so we don't always need to reconnect
-        self.activeBillingClient = billingClient
         return billingClient
     }
 
@@ -309,15 +386,18 @@ public struct Marketplace: Sendable {
         }
 
         let purchaseResult: PurchaseResultInfo = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<PurchaseResultInfo, Error>) in
-            // hook into the purchasesUpdated() callback above with a continuation that will be invoked when the purchase is completed
-            purchasesUpdatedListeners.append(PurchaseListenerWrapper(once: true) { purchaseResult in
+            // hook into the purchasesUpdated() callback with a one-shot listener that is invoked when the purchase completes
+            let wrapper = PurchaseListenerWrapper(once: true) { purchaseResult in
                 logger.info("purchases updated: result=\(purchaseResult.result) purchases=\(purchaseResult.purchases)")
                 continuation.resume(returning: purchaseResult)
-            })
+            }
+            addPurchaseListener(wrapper)
 
             let result = billingClient.launchBillingFlow(activity, billingFlowParams)
             logger.info("launchBillingFlow response: code=\(result.responseCode) message=\(result.debugMessage)")
             if result.responseCode != BillingClient.BillingResponseCode.OK {
+                // the flow did not launch, so no purchasesUpdated callback will arrive; remove the listener
+                removePurchaseListener(wrapper)
                 continuation.resume(throwing: marketplaceError(for: result))
             }
         }
@@ -407,7 +487,7 @@ public struct Marketplace: Sendable {
     }
     
     #if SKIP
-    nonisolated(unsafe) private func queryPurchasesAsync(_ productType: String) async throws -> List<Purchase> {
+    private func queryPurchasesAsync(_ productType: String) async throws -> List<Purchase> {
         let billingClient = try await connectBillingClient()
         let params = QueryPurchasesParams.newBuilder()
             .setProductType(productType)
@@ -497,10 +577,10 @@ public struct Marketplace: Sendable {
                     }
                 }
             }
-            purchasesUpdatedListeners.append(wrapper)
-            
+            addPurchaseListener(wrapper)
+
             continuation.onTermination = { @Sendable _ in
-                purchasesUpdatedListeners.removeAll(where: { $0 === wrapper })
+                self.removePurchaseListener(wrapper)
             }
 
             // Ensure billing client is connected
