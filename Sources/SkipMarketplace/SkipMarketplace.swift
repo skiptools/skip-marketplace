@@ -10,6 +10,7 @@ import com.android.billingclient.api.BillingClient
 import com.android.billingclient.api.BillingClientStateListener
 import com.android.billingclient.api.BillingFlowParams
 import com.android.billingclient.api.BillingResult
+import com.android.billingclient.api.GetBillingConfigParams
 import com.android.billingclient.api.PendingPurchasesParams
 import com.android.billingclient.api.PurchasesUpdatedListener
 import com.android.billingclient.api.Purchase
@@ -144,6 +145,41 @@ public final class Marketplace: @unchecked Sendable {
         }
     }
 
+    /// Returns the current App Store or Google Play country as an ISO 3166-1 alpha-2 code,
+    /// or nil if the store cannot supply one. This describes the store account's region.
+    /// Query it when needed because it can change. Do not persist it or use it as a physical location.
+    public func storefrontCountryCode() async -> String? {
+        #if SKIP
+        guard let billingClient = try? await connectBillingClient() else { return nil }
+        let params = GetBillingConfigParams.newBuilder().build()
+        return await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
+            billingClient.getBillingConfigAsync(params) { result, config in
+                let code = result.responseCode == BillingClient.BillingResponseCode.OK ? config?.countryCode : nil
+                continuation.resume(returning: Self.validatedCountryCode(code))
+            }
+        }
+        #elseif canImport(StoreKit)
+        let storefront = await Storefront.current
+        return Self.appStoreCountryCode(storefront?.countryCode)
+        #else
+        return nil
+        #endif
+    }
+
+    /// Both stores use uppercase ASCII letters for country codes.
+    static func validatedCountryCode(_ code: String?) -> String? {
+        guard let code, code.utf8.count == 2,
+              code.utf8.allSatisfy({ (65...90).contains(Int($0)) }) else { return nil }
+        return code
+    }
+
+    #if !SKIP && canImport(StoreKit)
+    /// Foundation canonicalizes a three-letter App Store region to its two-letter identifier.
+    static func appStoreCountryCode(_ code: String?) -> String? {
+        guard let code, code.utf8.count == 3 else { return nil }
+        return validatedCountryCode(Locale(identifier: "und_\(code)").region?.identifier)
+    }
+    #endif
 
     #if SKIP
     /// Guards all access to the mutable billing state (`activeBillingClient`, `connectTask`,

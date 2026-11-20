@@ -42,6 +42,39 @@ final class SkipMarketplaceTests: XCTestCase {
         XCTAssertFalse(other.isFirstPartyAppStore)
     }
 
+    func testStorefrontCountryCodeFormat() {
+        XCTAssertEqual(Marketplace.validatedCountryCode("CN"), "CN")
+        XCTAssertEqual(Marketplace.validatedCountryCode("US"), "US")
+        XCTAssertNil(Marketplace.validatedCountryCode(nil))
+        XCTAssertNil(Marketplace.validatedCountryCode(""))
+        XCTAssertNil(Marketplace.validatedCountryCode("usa"))
+        XCTAssertNil(Marketplace.validatedCountryCode("us"))
+        XCTAssertNil(Marketplace.validatedCountryCode("12"))
+    }
+
+    #if !SKIP && canImport(StoreKit)
+    func testAppStoreCountryConversion() {
+        XCTAssertEqual(Marketplace.appStoreCountryCode("CHN"), "CN")
+        XCTAssertEqual(Marketplace.appStoreCountryCode("HKG"), "HK")
+        XCTAssertEqual(Marketplace.appStoreCountryCode("TWN"), "TW")
+        XCTAssertEqual(Marketplace.appStoreCountryCode("USA"), "US")
+        XCTAssertNil(Marketplace.appStoreCountryCode(nil))
+        XCTAssertNil(Marketplace.appStoreCountryCode("ZZZ"))
+    }
+    #endif
+
+    #if SKIP
+    func testPlayStorefrontCountryOnDevice() async throws {
+        guard isAndroid else { throw XCTSkip("Requires Android instrumentation and Google Play.") }
+        if let code = await Marketplace.current.storefrontCountryCode() {
+            XCTAssertEqual(Marketplace.validatedCountryCode(code), code)
+            logger.info("Google Play supplied a storefront country.")
+        } else {
+            logger.info("Google Play storefront country unavailable.")
+        }
+    }
+    #endif
+
     func testMarketplaceSingleton() throws {
         let marketplace = Marketplace.current
         XCTAssertNotNil(marketplace)
