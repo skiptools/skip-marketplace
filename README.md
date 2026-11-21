@@ -11,6 +11,7 @@ On iOS this wraps Apple's [StoreKit](https://developer.apple.com/documentation/s
 - [App Review Requests](#app-review-requests)
 - [App Update Prompts](#app-update-prompts)
 - [Installation Source](#installation-source)
+- [Storefront Country](#storefront-country)
 - [API Reference](#api-reference)
 
 ## Setup
@@ -455,6 +456,16 @@ if source.isFirstPartyAppStore {
 }
 ```
 
+## Storefront Country
+
+Read the current store account's country when deciding which regional content to display.
+
+```swift
+let countryCode = await Marketplace.current.storefrontCountryCode()
+```
+
+The result is an uppercase ISO 3166-1 alpha-2 code such as `"CN"` or `"US"`, or `nil` when the store is unavailable or returns no usable country. It describes the store account and can differ from the user's physical location. Query it when needed and do not persist it. The lookup uses [StoreKit's current storefront](https://developer.apple.com/documentation/storekit/storefront/current) on Apple platforms and [Google Play's billing configuration](https://developer.android.com/google/play/billing/integrate#query-billing-config) on Android.
+
 ## API Reference
 
 ### Marketplace
@@ -465,6 +476,7 @@ The main entry point, accessed via `Marketplace.current`.
 |---|---|
 | `current` | The singleton marketplace instance |
 | `installationSource` | Where the app was installed from (`async`) |
+| `storefrontCountryCode()` | Current App Store or Play account country as a two-letter code, if available (`async`). |
 | `fetchProducts(for:subscription:)` | Fetch product details by ID. Wraps [`Product.products(for:)`](https://developer.apple.com/documentation/storekit/product/products(for:)) / [`BillingClient.queryProductDetails`](https://developer.android.com/reference/com/android/billingclient/api/BillingClient#queryProductDetails(com.android.billingclient.api.QueryProductDetailsParams,com.android.billingclient.api.ProductDetailsResponseListener)) |
 | `purchase(item:offer:)` | Initiate a purchase, returning a [`PurchaseResult`](#purchaseresult). Wraps [`Product.purchase(options:)`](https://developer.apple.com/documentation/storekit/product/purchase(options:)) / [`BillingClient.launchBillingFlow`](https://developer.android.com/reference/com/android/billingclient/api/BillingClient#launchBillingFlow(android.app.Activity,com.android.billingclient.api.BillingFlowParams)) |
 | `fetchEntitlements()` | Get all current entitlements. Wraps [`Transaction.currentEntitlements`](https://developer.apple.com/documentation/storekit/transaction/currententitlements) / [`BillingClient.queryPurchasesAsync`](https://developer.android.com/reference/com/android/billingclient/api/BillingClient#queryPurchasesAsync(com.android.billingclient.api.QueryPurchasesParams,com.android.billingclient.api.PurchasesResponseListener)) |
